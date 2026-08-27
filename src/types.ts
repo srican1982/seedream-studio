@@ -1,0 +1,69 @@
+export type Mode = "images" | "video";
+export type Quality = "basic" | "high";
+export type ImageFormat = "PNG" | "JPG" | "WEBP";
+export type VideoFormat = "MP4" | "WEBM" | "MOV";
+export type Aspect = "1:1" | "16:9" | "9:16" | "4:3" | "3:4" | "21:9";
+
+export type ImageTabId = "seedream-5-pro" | "seedream-5-lite" | "seedream-4-5";
+export type VideoTabId = "seedance-2-5" | "seedance-2-0" | "seedance-1-5";
+export type TabId = ImageTabId | VideoTabId;
+
+export type LocalImage = {
+  id: string;
+  name: string;
+  preview: string;
+  dataUri: string;
+};
+
+export type ResultKind = "image" | "video";
+
+export type StudioResult = {
+  kind: ResultKind;
+  url: string;
+  uuid?: string;
+  cost?: number;
+  filename: string;
+};
+
+export type TabState = {
+  images: LocalImage[];
+  prompt: string;
+  aspect: Aspect;
+  quality: Quality;
+  imageFormat: ImageFormat;
+  videoFormat: VideoFormat;
+  resolution: "480p" | "720p" | "1080p";
+  duration: number;
+  audio: boolean;
+  safety: boolean;
+  busy: boolean;
+  progress: number | null;
+  error: string | null;
+  result: StudioResult | null;
+};
+
+export type ImageModel = {
+  id: ImageTabId;
+  kind: "image";
+  airId: string;
+  label: string;
+  subtitle: string;
+  maxImages: number;
+  promptMax: number;
+};
+
+export type VideoModel = {
+  id: VideoTabId;
+  kind: "video";
+  airId: string;
+  label: string;
+  subtitle: string;
+  maxImages: number;
+  promptMax: number;
+  durations: number[];
+  resolutions: Array<"480p" | "720p" | "1080p">;
+  supportsReferenceImages: boolean;
+  audioInSettings: boolean;
+};
+
+export type Model = ImageModel | VideoModel;
