@@ -20,6 +20,8 @@ export type ResultKind = "image" | "video";
 export type StudioResult = {
   kind: ResultKind;
   url: string;
+  localPath?: string;
+  remoteUrl?: string;
   uuid?: string;
   cost?: number;
   filename: string;

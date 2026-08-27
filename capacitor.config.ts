@@ -9,6 +9,7 @@ const config: CapacitorConfig = {
   },
   android: {
     allowMixedContent: true,
+    adjustMarginsForEdgeToEdge: "force",
   },
   plugins: {
     Camera: {

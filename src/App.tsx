@@ -177,7 +177,7 @@ export default function App() {
       patch({ error: null });
       setSavedNote(
         how === "gallery"
-          ? "Saved to your gallery."
+          ? "Saved to Photos in the Seedream Studio album."
           : how === "share"
             ? "Use Save to Photos or Files in the share sheet."
             : "Download started."
@@ -458,6 +458,7 @@ export default function App() {
           <div className="placeholder">{state.busy ? "Working on it…" : "Your result will show up here."}</div>
         )}
       </section>
+      <div className="nav-spacer" aria-hidden="true" />
       </div>
 
       {settingsOpen && (

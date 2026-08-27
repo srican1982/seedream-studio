@@ -1,7 +1,7 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { findImage, findVideo, imageSize, VIDEO_AUDIO_MODELS, VIDEO_SAFETY_MODELS } from "./models";
 import { fileToDataUri, isImageFile, sleep, uuid } from "./media";
-import { isNativeApp, saveAndShare, saveRemoteUrl } from "./native";
+import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
 
 const RUNWARE = "https://api.runware.ai/v1";
@@ -238,12 +238,21 @@ export async function generateImage(
 
   const row = await runTask(task, onProgress);
   const media = resultUrl(row);
-  return {
+  const result: StudioResult = {
     kind: "image",
     url: media.url,
     uuid: media.uuid,
     cost: typeof row.cost === "number" ? row.cost : undefined,
     filename: `${tab}-${Date.now()}.${state.imageFormat.toLowerCase()}`,
+  };
+  const persisted = await persistNativeResult(result);
+  if (persisted.localPath && result.uuid) void deleteMedia(result.uuid);
+  return {
+    ...result,
+    url: persisted.url,
+    localPath: persisted.localPath,
+    remoteUrl: /^https?:\/\//i.test(result.url) ? result.url : undefined,
+    uuid: persisted.localPath ? undefined : result.uuid,
   };
 }
 
@@ -280,20 +289,39 @@ export async function generateVideo(
 
   const row = await runTask(task, onProgress);
   const media = resultUrl(row);
-  return {
+  const result: StudioResult = {
     kind: "video",
     url: media.url,
     uuid: media.uuid,
     cost: typeof row.cost === "number" ? row.cost : undefined,
     filename: `${tab}-${Date.now()}.${state.videoFormat.toLowerCase()}`,
   };
+  const persisted = await persistNativeResult(result);
+  if (persisted.localPath && result.uuid) void deleteMedia(result.uuid);
+  return {
+    ...result,
+    url: persisted.url,
+    localPath: persisted.localPath,
+    remoteUrl: /^https?:\/\//i.test(result.url) ? result.url : undefined,
+    uuid: persisted.localPath ? undefined : result.uuid,
+  };
 }
 
 export async function downloadResult(result: StudioResult) {
-  if (isNativeApp() && /^https?:/i.test(result.url)) {
-    const how = await saveRemoteUrl(result.url, result.filename, result.kind === "video");
-    if (result.uuid) void deleteMedia(result.uuid);
-    return how;
+  if (isNativeApp()) {
+    const source = result.localPath || result.remoteUrl || result.url;
+    try {
+      const how = await saveToDeviceGallery(source, result.filename, result.kind === "video");
+      if (result.uuid) void deleteMedia(result.uuid);
+      return how;
+    } catch (error) {
+      if (result.remoteUrl && result.remoteUrl !== source) {
+        const how = await saveToDeviceGallery(result.remoteUrl, result.filename, result.kind === "video");
+        if (result.uuid) void deleteMedia(result.uuid);
+        return how;
+      }
+      throw error;
+    }
   }
 
   if (result.url.startsWith("data:")) {

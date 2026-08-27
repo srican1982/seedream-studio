@@ -1,8 +1,8 @@
 import { Capacitor } from "@capacitor/core";
 import { Camera } from "@capacitor/camera";
 import { Filesystem, Directory } from "@capacitor/filesystem";
-import { Media } from "@capacitor-community/media";
 import { Share } from "@capacitor/share";
+import { GallerySave } from "./gallery-save";
 import { downloadBlob } from "./media";
 
 export type SaveMethod = "gallery" | "share" | "file";
@@ -15,15 +15,16 @@ function safeName(filename: string) {
   return filename.replace(/[^a-zA-Z0-9._-]/g, "_") || `seedream-${Date.now()}`;
 }
 
-function mimeFromName(filename: string, blob: Blob) {
-  if (blob.type && blob.type !== "application/octet-stream") return blob.type;
-  if (/\.mp4$/i.test(filename)) return "video/mp4";
-  if (/\.webm$/i.test(filename)) return "video/webm";
-  if (/\.mov$/i.test(filename)) return "video/quicktime";
-  if (/\.png$/i.test(filename)) return "image/png";
-  if (/\.webp$/i.test(filename)) return "image/webp";
-  if (/\.gif$/i.test(filename)) return "image/gif";
-  return "image/jpeg";
+function guessMime(filename: string, video: boolean) {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".mp4")) return "video/mp4";
+  if (lower.endsWith(".webm")) return "video/webm";
+  if (lower.endsWith(".mov")) return "video/quicktime";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  return video ? "video/mp4" : "image/jpeg";
 }
 
 async function blobToBase64(blob: Blob) {
@@ -56,8 +57,7 @@ async function photosFromPicker(limit: number) {
 }
 
 export async function pickGalleryImages(limit: number): Promise<File[]> {
-  if (limit <= 0) return [];
-  if (!isNativeApp()) return [];
+  if (limit <= 0 || !isNativeApp()) return [];
 
   try {
     const current = await Camera.checkPermissions();
@@ -65,7 +65,7 @@ export async function pickGalleryImages(limit: number): Promise<File[]> {
       await Camera.requestPermissions({ permissions: ["photos"] });
     }
   } catch {
-    // Android 13+ Photo Picker can still work without a storage permission.
+    /* Android 13+ Photo Picker can work without this. */
   }
 
   try {
@@ -73,88 +73,34 @@ export async function pickGalleryImages(limit: number): Promise<File[]> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/cancel/i.test(message)) return [];
-    try {
-      await Camera.requestPermissions({ permissions: ["photos"] });
-    } catch {
-      /* ignore */
-    }
-    try {
-      return await photosFromPicker(limit);
-    } catch {
-      throw error instanceof Error ? error : new Error("Could not open the gallery.");
-    }
+    throw error instanceof Error ? error : new Error("Could not open the gallery.");
   }
 }
 
-async function ensureAlbumId() {
-  const albumName = "Seedream Studio";
-  const { albums } = await Media.getAlbums();
-  let match = albums.find((album) => album.name === albumName);
-
-  if (Capacitor.getPlatform() === "android") {
-    try {
-      const { path } = await Media.getAlbumsPath();
-      match = albums.find((album) => album.name === albumName && album.identifier.startsWith(path)) ?? match;
-    } catch {
-      /* name match is enough */
-    }
-  }
-
-  if (!match) {
-    await Media.createAlbum({ name: albumName });
-    const again = await Media.getAlbums();
-    match = again.albums.find((album) => album.name === albumName);
-  }
-
-  if (!match) throw new Error("Could not create a gallery album.");
-  return match.identifier;
-}
-
-async function saveUriToGallery(path: string, filename: string, video: boolean) {
-  const name = filename.replace(/\.[^.]+$/, "");
-  const save = (albumIdentifier?: string) =>
-    video
-      ? Media.saveVideo({ path, albumIdentifier, fileName: name })
-      : Media.savePhoto({ path, albumIdentifier, fileName: name });
-
-  try {
-    await save();
-  } catch {
-    await save(await ensureAlbumId());
-  }
-}
-
-async function shareOrThrow(uri: string, filename: string) {
+async function shareFile(uri: string, filename: string): Promise<SaveMethod> {
   try {
     await Share.share({
       title: filename,
       files: [uri],
       dialogTitle: "Save to gallery",
     });
-    return "share" as const;
+    return "share";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (/cancel/i.test(message)) return "share" as const;
-    throw new Error("Could not save to the gallery. Allow Photos access and try again.");
+    if (/cancel/i.test(message)) return "share";
+    throw error;
   }
 }
 
-export async function saveRemoteUrl(url: string, filename: string, video: boolean): Promise<SaveMethod> {
+export async function saveToDeviceGallery(source: string, filename: string, video: boolean): Promise<SaveMethod> {
   const name = safeName(filename);
-  const downloaded = await Filesystem.downloadFile({
-    url,
-    path: name,
-    directory: Directory.Cache,
-    recursive: true,
-  });
-  const uri = downloaded.path;
-  if (!uri) throw new Error("Could not download media.");
-
+  const mime = guessMime(name, video);
   try {
-    await saveUriToGallery(uri, name, video);
+    await GallerySave.save({ source, filename: name, mime, video });
     return "gallery";
-  } catch {
-    return shareOrThrow(uri, name);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(message || "Could not save to the gallery.");
   }
 }
 
@@ -165,24 +111,54 @@ export async function saveAndShare(blob: Blob, filename: string): Promise<SaveMe
   }
 
   const name = safeName(filename);
-  const base64 = await blobToBase64(blob);
-  const saved = await Filesystem.writeFile({
-    path: name,
-    data: base64,
-    directory: Directory.Cache,
-    recursive: true,
-  });
+  const video = blob.type.startsWith("video/") || /\.(mp4|webm|mov)$/i.test(name);
+  const mime = blob.type && blob.type !== "application/octet-stream" ? blob.type : guessMime(name, video);
+  const dataUri = `data:${mime};base64,${await blobToBase64(blob)}`;
 
   try {
-    await saveUriToGallery(saved.uri, name, blob.type.startsWith("video/") || /\.(mp4|webm|mov)$/i.test(name));
-    return "gallery";
-  } catch {
+    return await saveToDeviceGallery(dataUri, name, video);
+  } catch (first) {
+    const saved = await Filesystem.writeFile({
+      path: name,
+      data: dataUri.split(",")[1] || "",
+      directory: Directory.Cache,
+      recursive: true,
+    });
     try {
-      const mime = mimeFromName(name, blob);
-      await saveUriToGallery(`data:${mime};base64,${base64}`, name, blob.type.startsWith("video/"));
-      return "gallery";
+      return await saveToDeviceGallery(saved.uri, name, video);
     } catch {
-      return shareOrThrow(saved.uri, name);
+      try {
+        return await shareFile(saved.uri, name);
+      } catch {
+        throw first instanceof Error ? first : new Error("Could not save to the gallery.");
+      }
     }
+  }
+}
+
+export async function persistNativeResult(result: {
+  url: string;
+  filename: string;
+  uuid?: string;
+}): Promise<{ url: string; localPath?: string; uuid?: string }> {
+  if (!isNativeApp() || !/^https?:/i.test(result.url)) {
+    return { url: result.url, uuid: result.uuid };
+  }
+
+  try {
+    const downloaded = await Filesystem.downloadFile({
+      url: result.url,
+      path: safeName(result.filename),
+      directory: Directory.Cache,
+      recursive: true,
+    });
+    if (!downloaded.path) return { url: result.url, uuid: result.uuid };
+    return {
+      url: Capacitor.convertFileSrc(downloaded.path),
+      localPath: downloaded.path,
+      uuid: result.uuid,
+    };
+  } catch {
+    return { url: result.url, uuid: result.uuid };
   }
 }
