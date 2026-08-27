@@ -23,6 +23,7 @@ jobs:
       - uses: android-actions/setup-android@v3
       - run: npx cap add android
       - run: npx cap sync android
+      - run: node scripts/patch-android.mjs
       - name: Build debug APK
         working-directory: android
         run: chmod +x gradlew && ./gradlew assembleDebug

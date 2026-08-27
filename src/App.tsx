@@ -23,6 +23,7 @@ import {
   initialStates,
 } from "./models";
 import type { ImageTabId, Mode, TabId, TabState, VideoTabId } from "./types";
+import { isNativeApp, pickGalleryImages } from "./native";
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("images");
@@ -33,6 +34,8 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
   const [adding, setAdding] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savedNote, setSavedNote] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
@@ -149,6 +152,45 @@ export default function App() {
     }
   }
 
+  async function pickPhotos() {
+    if (state.images.length >= maxImages) return;
+    if (isNativeApp()) {
+      try {
+        const files = await pickGalleryImages(maxImages - tabsRef.current[activeId].images.length);
+        await onFiles(files);
+      } catch (error) {
+        patch({
+          error: error instanceof Error ? error.message : "Could not open the gallery.",
+        });
+      }
+      return;
+    }
+    fileRef.current?.click();
+  }
+
+  async function onDownload() {
+    if (!state.result || saving) return;
+    setSaving(true);
+    setSavedNote(null);
+    try {
+      const how = await downloadResult(state.result);
+      patch({ error: null });
+      setSavedNote(
+        how === "gallery"
+          ? "Saved to your gallery."
+          : how === "share"
+            ? "Use Save to Photos or Files in the share sheet."
+            : "Download started."
+      );
+    } catch (error) {
+      patch({
+        error: error instanceof Error ? error.message : "Download failed.",
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   const generateLabel = useMemo(() => {
     if (mode === "images") return `Generate · Seedream ${imageModel?.label}`;
     return `Generate · Seedance ${videoModel?.label}`;
@@ -156,46 +198,63 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="top">
-        <div>
-          <div className="brand">Seedream Studio</div>
-          <div className="sub">Runware · Text / Image to {mode === "images" ? "Image" : "Video"}</div>
-        </div>
-        <div className="top-actions">
-          <span className={`status ${health.configured ? "on" : "off"}`}>
-            <i />
-            {health.configured ? "API Online" : "API Key"}
-          </span>
-          <button className="icon-btn" onClick={() => setSettingsOpen(true)} aria-label="Settings">
-            <Gear />
+      <div className="chrome">
+        <header className="top">
+          <div>
+            <div className="brand">Seedream Studio</div>
+            <div className="sub">Runware · Text / Image to {mode === "images" ? "Image" : "Video"}</div>
+          </div>
+          <div className="top-actions">
+            <span className={`status ${health.configured ? "on" : "off"}`}>
+              <i />
+              {health.configured ? "API Online" : "API Key"}
+            </span>
+            <button className="icon-btn" onClick={() => setSettingsOpen(true)} aria-label="Settings">
+              <Gear />
+            </button>
+          </div>
+        </header>
+
+        <div className="mode-switch">
+          <button className={mode === "images" ? "on" : ""} onClick={() => setMode("images")}>
+            <Landscape /> Images
+          </button>
+          <button className={mode === "video" ? "on" : ""} onClick={() => setMode("video")}>
+            <Camera /> Video
           </button>
         </div>
-      </header>
 
-      <div className="mode-switch">
-        <button className={mode === "images" ? "on" : ""} onClick={() => setMode("images")}>
-          <Landscape /> Images
-        </button>
-        <button className={mode === "video" ? "on" : ""} onClick={() => setMode("video")}>
-          <Camera /> Video
-        </button>
+        <div className="model-tabs">
+          {(mode === "images" ? IMAGE_MODELS : VIDEO_MODELS).map((item) => (
+            <button
+              key={item.id}
+              className={item.id === activeId ? "on" : ""}
+              onClick={() => {
+                if (item.kind === "image") setImageTab(item.id);
+                else setVideoTab(item.id);
+              }}
+            >
+              <b>{item.label}</b>
+              <small>{item.subtitle}</small>
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="model-tabs">
-        {(mode === "images" ? IMAGE_MODELS : VIDEO_MODELS).map((item) => (
-          <button
-            key={item.id}
-            className={item.id === activeId ? "on" : ""}
-            onClick={() => {
-              if (item.kind === "image") setImageTab(item.id);
-              else setVideoTab(item.id);
-            }}
-          >
-            <b>{item.label}</b>
-            <small>{item.subtitle}</small>
-          </button>
-        ))}
-      </div>
+      <div className="scroll">
+      <input
+        ref={fileRef}
+        className="sr-only"
+        type="file"
+        accept="image/*"
+        multiple
+        disabled={state.images.length >= maxImages}
+        onChange={(e: ChangeEvent<HTMLInputElement>) => {
+          const picked = Array.from(e.target.files || []);
+          e.target.value = "";
+          void onFiles(picked);
+        }}
+      />
 
       <section className="card">
         <div className="row-head">
@@ -213,24 +272,15 @@ export default function App() {
           )}
         </div>
 
-        <label className={`drop ${state.images.length >= maxImages ? "full" : ""}`}>
-          <input
-            ref={fileRef}
-            className="sr-only"
-            type="file"
-            accept="image/*"
-            multiple
-            disabled={state.images.length >= maxImages}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => {
-              const picked = Array.from(e.target.files || []);
-              e.target.value = "";
-              void onFiles(picked);
-            }}
-          />
+        <button
+          className={`drop ${state.images.length >= maxImages ? "full" : ""}`}
+          type="button"
+          onClick={() => void pickPhotos()}
+        >
           <Upload />
           <strong>{adding ? "Adding photos…" : "Tap to add images"}</strong>
-          <em>Image-to-image · add several · they all go in one request</em>
-        </label>
+          <em>Allow gallery access · add several · they all go in one request</em>
+        </button>
 
         <div className="photo-row">
           {state.images.length === 0 ? (
@@ -251,7 +301,7 @@ export default function App() {
             ))
           )}
           {state.images.length > 0 && state.images.length < maxImages && (
-            <button className="thumb add" type="button" onClick={() => fileRef.current?.click()}>
+            <button className="thumb add" type="button" onClick={() => void pickPhotos()}>
               +
             </button>
           )}
@@ -399,14 +449,16 @@ export default function App() {
             ) : (
               <img src={state.result.url} alt="Generated output" />
             )}
-            <button className="download" type="button" onClick={() => void downloadResult(state.result!)}>
-              Download
+            <button className="download" type="button" disabled={saving} onClick={() => void onDownload()}>
+              {saving ? "Saving…" : isNativeApp() ? "Save to gallery" : "Download"}
             </button>
+            {savedNote && <p className="saved-note">{savedNote}</p>}
           </>
         ) : (
           <div className="placeholder">{state.busy ? "Working on it…" : "Your result will show up here."}</div>
         )}
       </section>
+      </div>
 
       {settingsOpen && (
         <div className="sheet" onClick={() => setSettingsOpen(false)}>

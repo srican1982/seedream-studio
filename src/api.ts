@@ -1,6 +1,7 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { findImage, findVideo, imageSize, VIDEO_AUDIO_MODELS, VIDEO_SAFETY_MODELS } from "./models";
-import { downloadBlob, fileToDataUri, isImageFile, sleep, uuid } from "./media";
+import { fileToDataUri, isImageFile, sleep, uuid } from "./media";
+import { isNativeApp, saveAndShare, saveRemoteUrl } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
 
 const RUNWARE = "https://api.runware.ai/v1";
@@ -289,11 +290,17 @@ export async function generateVideo(
 }
 
 export async function downloadResult(result: StudioResult) {
+  if (isNativeApp() && /^https?:/i.test(result.url)) {
+    const how = await saveRemoteUrl(result.url, result.filename, result.kind === "video");
+    if (result.uuid) void deleteMedia(result.uuid);
+    return how;
+  }
+
   if (result.url.startsWith("data:")) {
     const res = await fetch(result.url);
-    downloadBlob(await res.blob(), result.filename);
+    const how = await saveAndShare(await res.blob(), result.filename);
     if (result.uuid) void deleteMedia(result.uuid);
-    return;
+    return how;
   }
 
   const proxy = `/api/media?url=${encodeURIComponent(result.url)}`;
@@ -306,7 +313,7 @@ export async function downloadResult(result: StudioResult) {
   }
 
   if (!blob) {
-    if (Capacitor.isNativePlatform()) {
+    if (isNativeApp()) {
       const http = await CapacitorHttp.get({ url: result.url, responseType: "blob", readTimeout: 600000 });
       const raw = String(http.data || "");
       blob = await (await fetch(`data:application/octet-stream;base64,${raw}`)).blob();
@@ -317,8 +324,9 @@ export async function downloadResult(result: StudioResult) {
     }
   }
 
-  downloadBlob(blob, result.filename);
+  const how = await saveAndShare(blob, result.filename);
   if (result.uuid) void deleteMedia(result.uuid);
+  return how;
 }
 
 export async function addImages(existing: LocalImage[], files: FileList | File[], max: number): Promise<LocalImage[]> {

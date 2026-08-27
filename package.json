@@ -14,7 +14,11 @@
     "cap:sync": "npm run build && npx cap sync android"
   },
   "dependencies": {
+    "@capacitor-community/media": "^8.0.1",
+    "@capacitor/camera": "^7.0.5",
     "@capacitor/core": "^7.4.3",
+    "@capacitor/filesystem": "^7.1.8",
+    "@capacitor/share": "^7.0.4",
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
