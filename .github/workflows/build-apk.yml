@@ -1,47 +1,31 @@
-name: Android APK
+name: build-apk
 
 on:
-  workflow_dispatch: {}
   push:
-    branches:
-      - main
-      - master
+    branches: [main]
+  workflow_dispatch: {}
 
 jobs:
   apk:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-
       - run: npm ci
       - run: npm run build
-
-      - name: Optional device API key
-        run: printf '{ "apiKey": "%s" }\n' "${{ secrets.RUNWARE_API_KEY }}" > dist/app-config.json
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
+      - uses: android-actions/setup-android@v3
       - run: npx cap add android
       - run: npx cap sync android
-
       - name: Build debug APK
         working-directory: android
         run: chmod +x gradlew && ./gradlew assembleDebug
-
       - uses: actions/upload-artifact@v4
         with:
           name: seedream-studio-debug-apk
