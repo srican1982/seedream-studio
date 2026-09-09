@@ -131,7 +131,58 @@ export async function checkHealth(): Promise<Health> {
   };
 }
 
-async function poll(taskUUID: string, onProgress?: (n: number) => void) {
+function isFinishedRow(row: Record<string, unknown>) {
+  return Boolean(
+    row.status === "success" ||
+      row.imageURL ||
+      row.imageDataURI ||
+      row.imageBase64Data ||
+      row.videoURL
+  );
+}
+
+function uuidFromMediaUrl(url: string) {
+  return /([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i.exec(url)?.[1];
+}
+
+function collectWipeIds(rows: Array<Record<string, unknown>>) {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (typeof row.imageUUID === "string" && row.imageUUID) ids.add(row.imageUUID);
+    if (typeof row.videoUUID === "string" && row.videoUUID) ids.add(row.videoUUID);
+    if (typeof row.mediaUUID === "string" && row.mediaUUID) ids.add(row.mediaUUID);
+    if (typeof row.imageURL === "string") {
+      const fromUrl = uuidFromMediaUrl(row.imageURL);
+      if (fromUrl) ids.add(fromUrl);
+    }
+    if (typeof row.videoURL === "string") {
+      const fromUrl = uuidFromMediaUrl(row.videoURL);
+      if (fromUrl) ids.add(fromUrl);
+    }
+  }
+  return [...ids];
+}
+
+const wipeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleWipe(ids: Array<string | undefined>) {
+  for (const id of ids) {
+    if (!id) continue;
+    const prev = wipeTimers.get(id);
+    if (prev) clearTimeout(prev);
+    wipeTimers.set(
+      id,
+      setTimeout(() => {
+        wipeTimers.delete(id);
+        void deleteMedia(id);
+      }, TTL * 1000)
+    );
+  }
+}
+
+type FinishedTask = { row: Record<string, unknown>; wipeIds: string[] };
+
+async function poll(taskUUID: string, onProgress?: (n: number) => void): Promise<FinishedTask> {
   let delay = 2000;
   const deadline = Date.now() + 15 * 60 * 1000;
   while (Date.now() < deadline) {
@@ -144,15 +195,8 @@ async function poll(taskUUID: string, onProgress?: (n: number) => void) {
       const err = failed.error as { message?: string } | undefined;
       throw new Error(err?.message || "Generation failed.");
     }
-    const done = rows.find(
-      (row) =>
-        row.status === "success" ||
-        row.imageURL ||
-        row.imageDataURI ||
-        row.imageBase64Data ||
-        row.videoURL
-    );
-    if (done) return done;
+    const done = rows.find(isFinishedRow);
+    if (done) return { row: done, wipeIds: collectWipeIds(rows) };
     const processing = rows.find((row) => typeof row.progress === "number");
     if (processing && typeof processing.progress === "number") onProgress?.(processing.progress);
     delay = Math.min(Math.round(delay * 1.25), 8000);
@@ -160,19 +204,14 @@ async function poll(taskUUID: string, onProgress?: (n: number) => void) {
   throw new Error("Timed out waiting for Runware.");
 }
 
-async function runTask(task: Record<string, unknown>, onProgress?: (n: number) => void) {
+async function runTask(task: Record<string, unknown>, onProgress?: (n: number) => void): Promise<FinishedTask> {
   const payload = await postRunware([task]);
   if (payload.errors?.length) throw new Error(errorMessage(payload));
-  const first = payload.data?.[0];
+  const rows = payload.data || [];
+  const first = rows[0];
   if (!first) throw new Error("Empty Runware response.");
-  if (
-    first.status === "success" ||
-    first.imageURL ||
-    first.imageDataURI ||
-    first.imageBase64Data ||
-    first.videoURL
-  ) {
-    return first;
+  if (isFinishedRow(first)) {
+    return { row: first, wipeIds: collectWipeIds(rows) };
   }
   return poll(String(task.taskUUID), onProgress);
 }
@@ -185,10 +224,18 @@ function resultUrl(row: Record<string, unknown>): { url: string; uuid?: string; 
     return { url: `data:image/png;base64,${row.imageBase64Data}`, uuid: String(row.imageUUID || ""), kind: "image" };
   }
   if (typeof row.imageURL === "string") {
-    return { url: row.imageURL, uuid: String(row.imageUUID || ""), kind: "image" };
+    return {
+      url: row.imageURL,
+      uuid: String(row.imageUUID || uuidFromMediaUrl(row.imageURL) || ""),
+      kind: "image",
+    };
   }
   if (typeof row.videoURL === "string") {
-    return { url: row.videoURL, uuid: String(row.videoUUID || ""), kind: "video" };
+    return {
+      url: row.videoURL,
+      uuid: String(row.videoUUID || uuidFromMediaUrl(row.videoURL) || ""),
+      kind: "video",
+    };
   }
   throw new Error("Runware returned no media.");
 }
@@ -246,8 +293,9 @@ export async function generateImage(
     task.settings = { thinking: true };
   }
 
-  const row = await runTask(task, onProgress);
+  const { row, wipeIds } = await runTask(task, onProgress);
   const media = resultUrl(row);
+  scheduleWipe([...wipeIds, media.uuid]);
   const result: StudioResult = {
     kind: "image",
     url: media.url,
@@ -256,7 +304,6 @@ export async function generateImage(
     filename: `${tab}-${Date.now()}.${tab === "qwen-layered" ? "tiff" : state.imageFormat.toLowerCase()}`,
   };
   const persisted = await persistNativeResult(result);
-  if (persisted.localPath && result.uuid) void deleteMedia(result.uuid);
   return {
     ...result,
     url: persisted.url,
@@ -312,8 +359,9 @@ export async function generateVideo(
     }
   }
 
-  const row = await runTask(task, onProgress);
+  const { row, wipeIds } = await runTask(task, onProgress);
   const media = resultUrl(row);
+  scheduleWipe([...wipeIds, media.uuid]);
   const result: StudioResult = {
     kind: "video",
     url: media.url,
@@ -322,7 +370,6 @@ export async function generateVideo(
     filename: `${tab}-${Date.now()}.${state.videoFormat.toLowerCase()}`,
   };
   const persisted = await persistNativeResult(result);
-  if (persisted.localPath && result.uuid) void deleteMedia(result.uuid);
   return {
     ...result,
     url: persisted.url,
