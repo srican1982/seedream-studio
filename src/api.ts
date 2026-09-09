@@ -1,5 +1,5 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
-import { findImage, findVideo, imageSize, VIDEO_AUDIO_MODELS, VIDEO_SAFETY_MODELS } from "./models";
+import { findImage, findVideo, imageSize, VIDEO_AUDIO_MODELS, VIDEO_SAFETY_MODELS, VIDEO_WAN_MODELS, wanSize } from "./models";
 import { fileToDataUri, isImageFile, sleep, uuid } from "./media";
 import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
@@ -215,23 +215,33 @@ export async function generateImage(
   onProgress?: (n: number) => void
 ): Promise<StudioResult> {
   const model = findImage(tab);
-  const size = imageSize(tab, state.aspect, state.quality);
   const refs = state.images.map((img) => img.dataUri).filter(Boolean);
+  if (model.requiresReference && refs.length < 1) {
+    throw new Error("Add one reference image for Qwen Layered.");
+  }
   const taskUUID = uuid();
   const task: Record<string, unknown> = {
     taskType: "imageInference",
     taskUUID,
     model: model.airId,
     positivePrompt: state.prompt.trim(),
-    width: size.width,
-    height: size.height,
     outputType: "URL",
-    outputFormat: state.imageFormat,
+    outputFormat: tab === "qwen-layered" ? "TIFF" : state.imageFormat,
     safety: { checkContent: state.safety },
     ttl: TTL,
     deliveryMethod: "async",
   };
-  if (refs.length) task.inputs = { referenceImages: refs };
+  if (!model.skipDimensions) {
+    const size = imageSize(tab, state.aspect, state.quality);
+    task.width = size.width;
+    task.height = size.height;
+  }
+  if (refs.length) {
+    task.inputs = { referenceImages: refs };
+    if (model.family === "qwen" && tab !== "qwen-layered") {
+      task.providerSettings = { alibaba: { promptExtend: true, promptExtendMode: "direct" } };
+    }
+  }
   if (tab === "seedream-5-pro" && state.quality === "high") {
     task.settings = { thinking: true };
   }
@@ -243,7 +253,7 @@ export async function generateImage(
     url: media.url,
     uuid: media.uuid,
     cost: typeof row.cost === "number" ? row.cost : undefined,
-    filename: `${tab}-${Date.now()}.${state.imageFormat.toLowerCase()}`,
+    filename: `${tab}-${Date.now()}.${tab === "qwen-layered" ? "tiff" : state.imageFormat.toLowerCase()}`,
   };
   const persisted = await persistNativeResult(result);
   if (persisted.localPath && result.uuid) void deleteMedia(result.uuid);
@@ -271,7 +281,6 @@ export async function generateVideo(
     taskUUID,
     model: model.airId,
     positivePrompt: state.prompt.trim(),
-    resolution,
     duration,
     outputType: "URL",
     outputFormat: state.videoFormat,
@@ -279,12 +288,28 @@ export async function generateVideo(
     deliveryMethod: "async",
   };
 
-  if (images.length) task.inputs = { frameImages: images };
-  if (VIDEO_SAFETY_MODELS.includes(tab)) {
-    task.safety = { checkContent: state.safety };
-  }
-  if (state.audio && VIDEO_AUDIO_MODELS.includes(tab)) {
-    task.settings = { audio: true };
+  if (VIDEO_WAN_MODELS.includes(tab)) {
+    if (images.length) {
+      task.inputs = images.length <= 2 ? { frameImages: images } : { referenceImages: images };
+      task.resolution = resolution;
+    } else {
+      const size = wanSize(state.aspect, resolution);
+      task.width = size.width;
+      task.height = size.height;
+    }
+    task.safety = { checkContent: state.safety, mode: "fast" };
+    const settings: Record<string, unknown> = { promptExtend: true };
+    if (VIDEO_AUDIO_MODELS.includes(tab)) settings.audio = state.audio;
+    task.settings = settings;
+  } else {
+    task.resolution = resolution;
+    if (images.length) task.inputs = { frameImages: images };
+    if (VIDEO_SAFETY_MODELS.includes(tab)) {
+      task.safety = { checkContent: state.safety };
+    }
+    if (state.audio && VIDEO_AUDIO_MODELS.includes(tab)) {
+      task.settings = { audio: true };
+    }
   }
 
   const row = await runTask(task, onProgress);

@@ -1,9 +1,21 @@
-import type { Aspect, ImageModel, ImageTabId, Quality, TabId, TabState, VideoModel, VideoTabId } from "./types";
+import type {
+  Aspect,
+  ImageFamily,
+  ImageModel,
+  ImageTabId,
+  Quality,
+  TabId,
+  TabState,
+  VideoFamily,
+  VideoModel,
+  VideoTabId,
+} from "./types";
 
 export const IMAGE_MODELS: ImageModel[] = [
   {
     id: "seedream-5-pro",
     kind: "image",
+    family: "seedream",
     airId: "bytedance:seedream@5.0-pro",
     label: "5.0 Pro",
     subtitle: "Flagship",
@@ -13,6 +25,7 @@ export const IMAGE_MODELS: ImageModel[] = [
   {
     id: "seedream-5-lite",
     kind: "image",
+    family: "seedream",
     airId: "bytedance:seedream@5.0-lite",
     label: "5.0 Lite",
     subtitle: "Ultra Fast",
@@ -22,11 +35,44 @@ export const IMAGE_MODELS: ImageModel[] = [
   {
     id: "seedream-4-5",
     kind: "image",
+    family: "seedream",
     airId: "bytedance:seedream@4.5",
     label: "4.5",
     subtitle: "Classic",
     maxImages: 14,
     promptMax: 3000,
+  },
+  {
+    id: "qwen-3",
+    kind: "image",
+    family: "qwen",
+    airId: "alibaba:qwen-image@3.0",
+    label: "3.0",
+    subtitle: "Balanced",
+    maxImages: 3,
+    promptMax: 32000,
+  },
+  {
+    id: "qwen-3-pro",
+    kind: "image",
+    family: "qwen",
+    airId: "alibaba:qwen-image@3.0-pro",
+    label: "3.0 Pro",
+    subtitle: "Highest",
+    maxImages: 3,
+    promptMax: 32000,
+  },
+  {
+    id: "qwen-layered",
+    kind: "image",
+    family: "qwen",
+    airId: "alibaba:qwen-image@layered",
+    label: "Layered",
+    subtitle: "Qwen Image",
+    maxImages: 1,
+    promptMax: 32000,
+    requiresReference: true,
+    skipDimensions: true,
   },
 ];
 
@@ -34,6 +80,7 @@ export const VIDEO_MODELS: VideoModel[] = [
   {
     id: "seedance-2-5",
     kind: "video",
+    family: "seedance",
     airId: "bytedance:seedance@2.5",
     label: "2.5 Pro",
     subtitle: "30s",
@@ -47,6 +94,7 @@ export const VIDEO_MODELS: VideoModel[] = [
   {
     id: "seedance-2-0",
     kind: "video",
+    family: "seedance",
     airId: "bytedance:seedance@2.0",
     label: "2.0 Lite",
     subtitle: "Multimodal",
@@ -60,6 +108,7 @@ export const VIDEO_MODELS: VideoModel[] = [
   {
     id: "seedance-1-5",
     kind: "video",
+    family: "seedance",
     airId: "bytedance:seedance@1.5-pro",
     label: "1.5 Pro",
     subtitle: "Cinematic",
@@ -69,6 +118,36 @@ export const VIDEO_MODELS: VideoModel[] = [
     resolutions: ["480p", "720p", "1080p"],
     supportsReferenceImages: false,
     audioInSettings: false,
+  },
+  {
+    id: "wan-3",
+    kind: "video",
+    family: "wan",
+    airId: "alibaba:wan@3.0",
+    label: "3.0",
+    subtitle: "Wan",
+    maxImages: 10,
+    promptMax: 20000,
+    durations: [5, 10, 15, 30],
+    resolutions: ["480p", "720p", "1080p"],
+    supportsReferenceImages: true,
+    audioInSettings: true,
+    usesWidthHeight: true,
+  },
+  {
+    id: "wan-3-prime",
+    kind: "video",
+    family: "wan",
+    airId: "alibaba:wan@3.0-prime",
+    label: "3.0 Prime",
+    subtitle: "Faster",
+    maxImages: 10,
+    promptMax: 20000,
+    durations: [5, 10, 15, 30],
+    resolutions: ["480p", "720p", "1080p"],
+    supportsReferenceImages: true,
+    audioInSettings: true,
+    usesWidthHeight: true,
   },
 ];
 
@@ -83,6 +162,7 @@ export const IMAGE_TAGS = [
 export const VIDEO_TAGS = ["Cinematic", "Slow motion", "Dolly zoom", "Aerial drone", "Golden hour"];
 
 export const ASPECTS: Aspect[] = ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"];
+export const WAN_ASPECTS: Aspect[] = ["1:1", "16:9", "9:16", "4:3", "3:4"];
 
 const DIMENSIONS: Record<ImageTabId, Record<Quality, Record<Aspect, { width: number; height: number }>>> = {
   "seedream-5-pro": {
@@ -139,21 +219,116 @@ const DIMENSIONS: Record<ImageTabId, Record<Quality, Record<Aspect, { width: num
       "21:9": { width: 6048, height: 2592 },
     },
   },
+  "qwen-3": {
+    basic: {
+      "1:1": { width: 1024, height: 1024 },
+      "4:3": { width: 1152, height: 864 },
+      "3:4": { width: 864, height: 1152 },
+      "16:9": { width: 1280, height: 720 },
+      "9:16": { width: 720, height: 1280 },
+      "21:9": { width: 1344, height: 576 },
+    },
+    high: {
+      "1:1": { width: 1664, height: 1664 },
+      "4:3": { width: 1664, height: 1248 },
+      "3:4": { width: 1248, height: 1664 },
+      "16:9": { width: 1920, height: 1080 },
+      "9:16": { width: 1080, height: 1920 },
+      "21:9": { width: 2048, height: 880 },
+    },
+  },
+  "qwen-3-pro": {
+    basic: {
+      "1:1": { width: 1024, height: 1024 },
+      "4:3": { width: 1152, height: 864 },
+      "3:4": { width: 864, height: 1152 },
+      "16:9": { width: 1280, height: 720 },
+      "9:16": { width: 720, height: 1280 },
+      "21:9": { width: 1344, height: 576 },
+    },
+    high: {
+      "1:1": { width: 1664, height: 1664 },
+      "4:3": { width: 1664, height: 1248 },
+      "3:4": { width: 1248, height: 1664 },
+      "16:9": { width: 1920, height: 1080 },
+      "9:16": { width: 1080, height: 1920 },
+      "21:9": { width: 2048, height: 880 },
+    },
+  },
+  "qwen-layered": {
+    basic: {
+      "1:1": { width: 1024, height: 1024 },
+      "4:3": { width: 1024, height: 768 },
+      "3:4": { width: 768, height: 1024 },
+      "16:9": { width: 1024, height: 576 },
+      "9:16": { width: 576, height: 1024 },
+      "21:9": { width: 1024, height: 440 },
+    },
+    high: {
+      "1:1": { width: 1024, height: 1024 },
+      "4:3": { width: 1024, height: 768 },
+      "3:4": { width: 768, height: 1024 },
+      "16:9": { width: 1024, height: 576 },
+      "9:16": { width: 576, height: 1024 },
+      "21:9": { width: 1024, height: 440 },
+    },
+  },
 };
 
-export const VIDEO_SAFETY_MODELS: VideoTabId[] = ["seedance-2-5"];
-export const VIDEO_AUDIO_MODELS: VideoTabId[] = ["seedance-2-5", "seedance-2-0"];
+const WAN_SIZES: Record<"480p" | "720p" | "1080p", Record<Aspect, { width: number; height: number }>> = {
+  "480p": {
+    "16:9": { width: 832, height: 480 },
+    "9:16": { width: 480, height: 832 },
+    "1:1": { width: 624, height: 624 },
+    "4:3": { width: 720, height: 544 },
+    "3:4": { width: 544, height: 720 },
+    "21:9": { width: 832, height: 480 },
+  },
+  "720p": {
+    "16:9": { width: 1280, height: 720 },
+    "9:16": { width: 720, height: 1280 },
+    "1:1": { width: 960, height: 960 },
+    "4:3": { width: 1104, height: 832 },
+    "3:4": { width: 832, height: 1104 },
+    "21:9": { width: 1280, height: 720 },
+  },
+  "1080p": {
+    "16:9": { width: 1920, height: 1080 },
+    "9:16": { width: 1080, height: 1920 },
+    "1:1": { width: 1440, height: 1440 },
+    "4:3": { width: 1648, height: 1248 },
+    "3:4": { width: 1248, height: 1648 },
+    "21:9": { width: 1920, height: 1080 },
+  },
+};
+
+export const VIDEO_SAFETY_MODELS: VideoTabId[] = ["seedance-2-5", "wan-3", "wan-3-prime"];
+export const VIDEO_AUDIO_MODELS: VideoTabId[] = ["seedance-2-5", "seedance-2-0", "wan-3", "wan-3-prime"];
+export const VIDEO_WAN_MODELS: VideoTabId[] = ["wan-3", "wan-3-prime"];
+
+export function imageModelsFor(family: ImageFamily) {
+  return IMAGE_MODELS.filter((model) => model.family === family);
+}
+
+export function videoModelsFor(family: VideoFamily) {
+  return VIDEO_MODELS.filter((model) => model.family === family);
+}
 
 export function imageSize(tab: ImageTabId, aspect: Aspect, quality: Quality) {
   const table = DIMENSIONS[tab][quality];
   return table[aspect] ?? table["1:1"];
 }
 
+export function wanSize(aspect: Aspect, resolution: "480p" | "720p" | "1080p") {
+  const table = WAN_SIZES[resolution];
+  return table[aspect] ?? table["16:9"];
+}
+
 export function emptyTabState(kind: "image" | "video"): TabState {
   return {
     images: [],
     prompt: "",
-    aspect: "1:1",
+    aspect: kind === "video" ? "16:9" : "1:1",
     quality: "basic",
     imageFormat: "PNG",
     videoFormat: "MP4",

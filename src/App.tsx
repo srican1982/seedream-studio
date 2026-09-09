@@ -12,21 +12,24 @@ import {
 import { appendTag, fileToDataUri, uuid } from "./media";
 import {
   ASPECTS,
-  IMAGE_MODELS,
   IMAGE_TAGS,
   VIDEO_AUDIO_MODELS,
-  VIDEO_MODELS,
   VIDEO_SAFETY_MODELS,
   VIDEO_TAGS,
+  WAN_ASPECTS,
   findImage,
   findVideo,
+  imageModelsFor,
   initialStates,
+  videoModelsFor,
 } from "./models";
-import type { ImageTabId, Mode, TabId, TabState, VideoTabId } from "./types";
+import type { ImageFamily, ImageTabId, Mode, TabId, TabState, VideoFamily, VideoTabId } from "./types";
 import { isNativeApp, pickGalleryImages } from "./native";
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("images");
+  const [imageFamily, setImageFamily] = useState<ImageFamily>("seedream");
+  const [videoFamily, setVideoFamily] = useState<VideoFamily>("seedance");
   const [imageTab, setImageTab] = useState<ImageTabId>("seedream-5-pro");
   const [videoTab, setVideoTab] = useState<VideoTabId>("seedance-2-5");
   const [tabs, setTabs] = useState(initialStates);
@@ -47,6 +50,7 @@ export default function App() {
   const model = imageModel ?? videoModel!;
   const maxImages = model.maxImages;
   const tags = mode === "images" ? IMAGE_TAGS : VIDEO_TAGS;
+  const visibleModels = mode === "images" ? imageModelsFor(imageFamily) : videoModelsFor(videoFamily);
 
   useEffect(() => {
     void (async () => {
@@ -132,6 +136,10 @@ export default function App() {
       patch({ error: "Write a prompt first." });
       return;
     }
+    if (imageModel?.requiresReference && state.images.length < 1) {
+      patch({ error: "Qwen Layered needs one reference image." });
+      return;
+    }
     if (state.images.some((img) => !img.dataUri)) {
       patch({ error: "Wait a moment — photos are still loading." });
       return;
@@ -192,8 +200,12 @@ export default function App() {
   }
 
   const generateLabel = useMemo(() => {
-    if (mode === "images") return `Generate · Seedream ${imageModel?.label}`;
-    return `Generate · Seedance ${videoModel?.label}`;
+    if (mode === "images") {
+      const brand = imageModel?.family === "qwen" ? "Qwen" : "Seedream";
+      return `Generate · ${brand} ${imageModel?.label}`;
+    }
+    const brand = videoModel?.family === "wan" ? "Wan" : "Seedance";
+    return `Generate · ${brand} ${videoModel?.label}`;
   }, [mode, imageModel, videoModel]);
 
   return (
@@ -224,8 +236,54 @@ export default function App() {
           </button>
         </div>
 
-        <div className="model-tabs">
-          {(mode === "images" ? IMAGE_MODELS : VIDEO_MODELS).map((item) => (
+        <div className="mode-switch family-switch">
+          {mode === "images" ? (
+            <>
+              <button
+                className={imageFamily === "seedream" ? "on" : ""}
+                onClick={() => {
+                  setImageFamily("seedream");
+                  if (findImage(imageTab).family !== "seedream") setImageTab("seedream-5-pro");
+                }}
+              >
+                Seedream
+              </button>
+              <button
+                className={imageFamily === "qwen" ? "on" : ""}
+                onClick={() => {
+                  setImageFamily("qwen");
+                  if (findImage(imageTab).family !== "qwen") setImageTab("qwen-3");
+                }}
+              >
+                Qwen
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className={videoFamily === "seedance" ? "on" : ""}
+                onClick={() => {
+                  setVideoFamily("seedance");
+                  if (findVideo(videoTab).family !== "seedance") setVideoTab("seedance-2-5");
+                }}
+              >
+                Seedance
+              </button>
+              <button
+                className={videoFamily === "wan" ? "on" : ""}
+                onClick={() => {
+                  setVideoFamily("wan");
+                  if (findVideo(videoTab).family !== "wan") setVideoTab("wan-3");
+                }}
+              >
+                Wan
+              </button>
+            </>
+          )}
+        </div>
+
+        <div className={`model-tabs cols-${visibleModels.length}`}>
+          {visibleModels.map((item) => (
             <button
               key={item.id}
               className={item.id === activeId ? "on" : ""}
@@ -259,7 +317,7 @@ export default function App() {
       <section className="card">
         <div className="row-head">
           <span>
-            <Photos /> Reference Images {mode === "video" ? "(optional)" : ""}
+            <Photos /> Reference Images {imageModel?.requiresReference ? "(required)" : mode === "video" ? "(optional)" : ""}
           </span>
           {state.images.length > 0 ? (
             <button className="link" type="button" onClick={() => patch({ images: [] })}>
@@ -279,7 +337,11 @@ export default function App() {
         >
           <Upload />
           <strong>{adding ? "Adding photos…" : "Tap to add images"}</strong>
-          <em>Allow gallery access · add several · they all go in one request</em>
+          <em>
+            {imageModel?.requiresReference
+              ? "Qwen Layered needs one picture"
+              : "Allow gallery access · add several · they all go in one request"}
+          </em>
         </button>
 
         <div className="photo-row">
@@ -339,7 +401,7 @@ export default function App() {
         </div>
       </section>
 
-      {mode === "images" ? (
+      {mode === "images" && !imageModel?.skipDimensions ? (
         <section className="card">
           <label>Aspect Ratio</label>
           <div className="aspects">
@@ -376,8 +438,30 @@ export default function App() {
             </div>
           </div>
         </section>
+      ) : mode === "images" ? (
+        <section className="card">
+          <p className="privacy">Qwen Layered splits one reference image into editable layers · output is TIFF</p>
+        </section>
       ) : (
         <section className="card">
+          {videoModel?.usesWidthHeight && state.images.length === 0 && (
+            <>
+              <label>Aspect Ratio</label>
+              <div className="aspects">
+                {WAN_ASPECTS.map((ratio) => (
+                  <button
+                    key={ratio}
+                    className={state.aspect === ratio ? "on" : ""}
+                    type="button"
+                    onClick={() => patch({ aspect: ratio })}
+                  >
+                    <span className={`box r-${ratio.replace(":", "-")}`} />
+                    {ratio}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
           <label>Resolution</label>
           <div className="seg">
             {videoModel!.resolutions.map((r) => (

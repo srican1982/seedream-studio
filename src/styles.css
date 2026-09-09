@@ -124,10 +124,16 @@ button { cursor: pointer; }
   color: #111;
 }
 
+.family-switch {
+  margin-top: 0;
+}
 .model-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: 8px;
+}
+.model-tabs.cols-2 {
+  grid-template-columns: 1fr 1fr;
 }
 .model-tabs button {
   background: var(--card);

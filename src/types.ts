@@ -4,8 +4,17 @@ export type ImageFormat = "PNG" | "JPG" | "WEBP";
 export type VideoFormat = "MP4" | "WEBM" | "MOV";
 export type Aspect = "1:1" | "16:9" | "9:16" | "4:3" | "3:4" | "21:9";
 
-export type ImageTabId = "seedream-5-pro" | "seedream-5-lite" | "seedream-4-5";
-export type VideoTabId = "seedance-2-5" | "seedance-2-0" | "seedance-1-5";
+export type ImageFamily = "seedream" | "qwen";
+export type VideoFamily = "seedance" | "wan";
+
+export type ImageTabId =
+  | "seedream-5-pro"
+  | "seedream-5-lite"
+  | "seedream-4-5"
+  | "qwen-3"
+  | "qwen-3-pro"
+  | "qwen-layered";
+export type VideoTabId = "seedance-2-5" | "seedance-2-0" | "seedance-1-5" | "wan-3" | "wan-3-prime";
 export type TabId = ImageTabId | VideoTabId;
 
 export type LocalImage = {
@@ -47,16 +56,20 @@ export type TabState = {
 export type ImageModel = {
   id: ImageTabId;
   kind: "image";
+  family: ImageFamily;
   airId: string;
   label: string;
   subtitle: string;
   maxImages: number;
   promptMax: number;
+  requiresReference?: boolean;
+  skipDimensions?: boolean;
 };
 
 export type VideoModel = {
   id: VideoTabId;
   kind: "video";
+  family: VideoFamily;
   airId: string;
   label: string;
   subtitle: string;
@@ -66,6 +79,7 @@ export type VideoModel = {
   resolutions: Array<"480p" | "720p" | "1080p">;
   supportsReferenceImages: boolean;
   audioInSettings: boolean;
+  usesWidthHeight?: boolean;
 };
 
 export type Model = ImageModel | VideoModel;
