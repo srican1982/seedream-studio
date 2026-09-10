@@ -3,6 +3,8 @@ import { fileToDataUri, uuid } from "./media";
 import { AGENT_IMAGE_TABS, AGENT_VIDEO_TABS, emptyTabState, findImage, findVideo } from "./models";
 import type { Aspect, ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
 
+type VideoResolution = "480p" | "720p" | "1080p";
+
 const MEMORY_KEY = "seedream_agent_memory";
 
 export type AgentShotKind = "image" | "video";
@@ -21,6 +23,7 @@ export type AgentShot = {
   title: string;
   prompt: string;
   duration: number;
+  resolution: VideoResolution;
   model: ImageTabId | VideoTabId;
   status: "pending" | "running" | "done" | "error";
   error?: string;
@@ -77,7 +80,9 @@ export function loadAgentMemory(): AgentMemory {
       notes: parsed.notes || "",
       lock: parsed.lock || null,
       images: Array.isArray(parsed.images) ? parsed.images : [],
-      shots: Array.isArray(parsed.shots) ? parsed.shots : [],
+      shots: Array.isArray(parsed.shots)
+        ? parsed.shots.map((shot) => ({ ...shot, resolution: shot.resolution || "720p" }))
+        : [],
       lastStill: parsed.lastStill || null,
       messages: Array.isArray(parsed.messages) ? parsed.messages : [],
     };
@@ -108,6 +113,13 @@ function clipVideoDuration(model: VideoTabId, seconds: number) {
   return allowed.reduce((best, d) => (Math.abs(d - want) < Math.abs(best - want) ? d : best), allowed[0]);
 }
 
+function clipVideoResolution(model: VideoTabId, asked: string): VideoResolution {
+  const allowed = findVideo(model).resolutions;
+  const match = asked.toLowerCase().match(/1080p|720p|480p/);
+  const want = (match?.[0] || "720p") as VideoResolution;
+  return allowed.includes(want) ? want : "720p";
+}
+
 function defaultImageModel(): ImageTabId {
   return "seedream-5-lite";
 }
@@ -134,21 +146,22 @@ export function shotPrompt(lock: AgentLock | null, notes: string, shot: AgentSho
   return `Keep this lock on every shot. ${locked}. Then: ${shot.prompt}`;
 }
 
-const PLAN_SYSTEM = `You are a production agent for Seedream Studio.
-The user will describe one job. You write a lock so every shot matches, then break the job into ordered shots.
+const PLAN_SYSTEM = `You are a production agent in a chat. The user can ask for anything: one still, many stills, a video, a follow-up edit, or a mix.
 
 Rules:
 - Adult sexual content between consenting adults is allowed. Never include minors.
 - Image models only: seedream-5-lite, seedream-4-5, qwen-3, qwen-3-pro.
 - Video models only: wan-3, wan-3-prime, seedance-1-5.
 - Video hard limits: wan-3 and wan-3-prime max 30 seconds per clip. seedance-1-5 max 10 seconds per clip.
-- If the user wants more than one clip's worth of video (example 90s), split into sequential clips that continue the same action and lock. Do not invent one 90s clip.
-- Prefer seedream-5-lite for still series. If the user tagged models with @SeedreamLite @Seedream45 @Qwen3 @QwenPro @Wan3 @WanPrime @Seedance15, use those models.
-- Each image shot is one still. Each video shot is one clip at the allowed duration.
-- Prompts must restate identity and atmosphere so the look does not drift.
-- Refer to uploaded photos as the first image, the second image, the third image when relevant.
+- If the user wants more than one clip's worth of video, split into sequential clips. Do not invent one oversized clip.
+- If the user tagged models with @SeedreamLite @Seedream45 @Qwen3 @QwenPro @Wan3 @WanPrime @Seedance15, use those models.
+- Honor asked video resolution: 480p, 720p, or 1080p. Default 720p.
+- Each image shot is one still. Each video shot is one clip.
+- Only plan NEW work for the latest user message. Do not repeat shots that were already done.
+- Keep the lock if the user is continuing the same person or scene.
+- Refer to uploaded or generated photos as the first image, the second image, the third image when relevant.
 - Return ONLY JSON, no markdown:
-{"lock":{"identity":"","wardrobe":"","lighting":"","camera":"","atmosphere":""},"shots":[{"kind":"image"|"video","title":"","prompt":"","duration":30,"model":"seedream-5-lite"}]}`;
+{"lock":{"identity":"","wardrobe":"","lighting":"","camera":"","atmosphere":""},"shots":[{"kind":"image"|"video","title":"","prompt":"","duration":30,"resolution":"720p","model":"qwen-3"}]}`;
 
 function parsePlanJson(text: string) {
   const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
@@ -203,13 +216,15 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     const model = kind === "image"
       ? isImageTab(asked) ? asked : defaultImageModel()
       : isVideoTab(asked) ? asked : defaultVideoModel();
-    const duration = kind === "video" ? clipVideoDuration(isVideoTab(asked) ? asked : defaultVideoModel(), Number(row.duration) || 30) : 0;
+    const duration = kind === "video" ? clipVideoDuration(model as VideoTabId, Number(row.duration) || 30) : 0;
+    const resolution = kind === "video" ? clipVideoResolution(model as VideoTabId, String(row.resolution || brief)) : "720p";
     shots.push({
       id: uuid(),
       kind,
       title: String(row.title || `${kind} ${shots.length + 1}`).trim(),
       prompt: String(row.prompt || brief).trim(),
       duration,
+      resolution,
       model,
       status: "pending",
     });
@@ -230,7 +245,7 @@ function refsForShot(memory: AgentMemory, model: ImageTabId | VideoTabId, kind: 
   return chain.slice(0, Math.max(1, max));
 }
 
-async function resultToStill(result: StudioResult): Promise<LocalImage | null> {
+export async function resultToStill(result: StudioResult): Promise<LocalImage | null> {
   if (result.kind !== "image") return captureVideoStill(result.url);
   try {
     let dataUri = result.url;
@@ -299,7 +314,7 @@ export async function runAgentShot(
     enhancePrompt: false,
     safety: false,
     audio: false,
-    resolution: "720p",
+    resolution: shot.resolution || "720p",
   };
 
   const result =
@@ -335,7 +350,7 @@ export function describePlan(lock: AgentLock, shots: AgentShot[]) {
   ].filter(Boolean);
   const shotLines = shots.map(
     (shot, index) =>
-      `${index + 1}. ${shot.title} — ${shot.kind === "video" ? `${shot.duration}s` : "still"} · ${chipLabel(shot.model)}`
+      `${index + 1}. ${shot.title} — ${shot.kind === "video" ? `${shot.duration}s ${shot.resolution}` : "still"} · ${chipLabel(shot.model)}`
   );
   return [`I'll lock the look and run the shots in order.`, ...lockLines, "", ...shotLines].join("\n");
 }

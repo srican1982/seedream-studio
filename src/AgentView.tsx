@@ -6,6 +6,7 @@ import {
   isRememberOnly,
   loadAgentMemory,
   planAgentJob,
+  resultToStill,
   runAgentShot,
   saveAgentMemory,
   type AgentMemory,
@@ -14,7 +15,7 @@ import {
 import { downloadResult } from "./api";
 import { fileToDataUri, uuid } from "./media";
 import { isNativeApp, pickGalleryImages } from "./native";
-import type { LocalImage } from "./types";
+import type { LocalImage, StudioResult } from "./types";
 
 function toggleToken(text: string, token: string) {
   if (text.includes(token)) {
@@ -80,6 +81,16 @@ export default function AgentView() {
     inputRef.current?.focus();
   }
 
+  async function useResult(result: StudioResult) {
+    const still = await resultToStill(result);
+    if (!still) return;
+    setPending((prev) => {
+      if (prev.some((img) => img.preview === still.preview || img.dataUri === still.dataUri)) return prev;
+      return [...prev, still].slice(0, 6);
+    });
+    inputRef.current?.focus();
+  }
+
   async function onSend() {
     const text = draft.trim();
     if ((!text && pending.length === 0) || busy) return;
@@ -95,7 +106,7 @@ export default function AgentView() {
       {
         ...memoryRef.current,
         brief: userMessage.text,
-        images: [...memoryRef.current.images, ...images].slice(-6),
+        images: [...memoryRef.current.images, ...images].slice(-8),
         notes: isRememberOnly(userMessage.text)
           ? [memoryRef.current.notes, userMessage.text.replace(/^\s*remember\b[:\s-]*/i, "")].filter(Boolean).join("\n")
           : memoryRef.current.notes,
@@ -121,10 +132,11 @@ export default function AgentView() {
         return;
       }
 
-      setProgress("Planning shots…");
+      setProgress("Planning…");
       const planned = await planAgentJob(current);
+      const kept = current.shots.filter((shot) => shot.status === "done" || shot.status === "error");
       current = pushMessage(
-        { ...current, lock: planned.lock, shots: planned.shots },
+        { ...current, lock: planned.lock, shots: [...kept, ...planned.shots] },
         {
           id: uuid(),
           role: "assistant",
@@ -134,8 +146,7 @@ export default function AgentView() {
       );
       commit(current);
 
-      for (const shot of current.shots) {
-        if (shot.status === "done") continue;
+      for (const shot of planned.shots) {
         setProgress(`Running ${shot.title}…`);
         current = {
           ...current,
@@ -153,7 +164,7 @@ export default function AgentView() {
         });
         commit(current);
       }
-      const videos = current.shots.filter((shot) => shot.kind === "video" && shot.result).length;
+      const videos = planned.shots.filter((shot) => shot.kind === "video" && current.shots.find((item) => item.id === shot.id)?.result).length;
       if (videos > 1) {
         current = pushMessage(current, {
           id: uuid(),
@@ -200,32 +211,40 @@ export default function AgentView() {
         }}
       />
 
-      <div className="chat-top">
-        <span>Agent chat</span>
-        <button
-          className="link"
-          type="button"
-          onClick={() => {
-            commit(emptyAgentMemory());
-            setDraft("");
-            setPending([]);
-          }}
-        >
-          New chat
-        </button>
+      <div className="chat-models">
+        <div className="chat-models-head">
+          <span>Models</span>
+          <button
+            className="link"
+            type="button"
+            onClick={() => {
+              commit(emptyAgentMemory());
+              setDraft("");
+              setPending([]);
+            }}
+          >
+            New chat
+          </button>
+        </div>
+        <div className="chat-chips top">
+          {AGENT_MODEL_CHIPS.map((chip) => (
+            <button
+              key={chip.id}
+              type="button"
+              className={draft.includes(chip.token) ? "on" : ""}
+              onClick={() => addChip(chip.token)}
+            >
+              {chip.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="chat-thread" ref={threadRef}>
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
-            <p>Tell me the whole job. Tap a model placeholder to drop it into the message.</p>
-            <div className="chat-empty-chips">
-              {AGENT_MODEL_CHIPS.map((chip) => (
-                <button key={chip.id} type="button" onClick={() => addChip(chip.token)}>
-                  {chip.label}
-                </button>
-              ))}
-            </div>
+            <p className="ask-title">Ask anything</p>
+            <p>Attach photos, tap a model up top, then say what you want.</p>
           </div>
         ) : (
           memory.messages.map((message) => (
@@ -245,17 +264,22 @@ export default function AgentView() {
                   ) : (
                     <img src={message.result.url} alt="Generated shot" />
                   )}
-                  <button
-                    className="link"
-                    type="button"
-                    disabled={savingId === message.id}
-                    onClick={() => {
-                      setSavingId(message.id);
-                      void downloadResult(message.result!).finally(() => setSavingId(null));
-                    }}
-                  >
-                    {savingId === message.id ? "Saving…" : isNativeApp() ? "Save" : "Download"}
-                  </button>
+                  <div className="bubble-actions">
+                    <button className="link" type="button" onClick={() => void useResult(message.result!)}>
+                      Use in chat
+                    </button>
+                    <button
+                      className="link"
+                      type="button"
+                      disabled={savingId === message.id}
+                      onClick={() => {
+                        setSavingId(message.id);
+                        void downloadResult(message.result!).finally(() => setSavingId(null));
+                      }}
+                    >
+                      {savingId === message.id ? "Saving…" : isNativeApp() ? "Save" : "Download"}
+                    </button>
+                  </div>
                 </div>
               ) : null}
             </article>
@@ -265,18 +289,6 @@ export default function AgentView() {
       </div>
 
       <div className="chat-dock">
-        <div className="chat-chips">
-          {AGENT_MODEL_CHIPS.map((chip) => (
-            <button
-              key={chip.id}
-              type="button"
-              className={draft.includes(chip.token) ? "on" : ""}
-              onClick={() => addChip(chip.token)}
-            >
-              {chip.label}
-            </button>
-          ))}
-        </div>
         {pending.length > 0 ? (
           <div className="chat-pending">
             {pending.map((img) => (
@@ -297,7 +309,7 @@ export default function AgentView() {
             ref={inputRef}
             rows={1}
             value={draft}
-            placeholder="Message the agent…"
+            placeholder="Ask anything"
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKey}
           />
