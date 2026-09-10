@@ -17,6 +17,7 @@ import {
   VIDEO_SAFETY_MODELS,
   VIDEO_TAGS,
   WAN_ASPECTS,
+  WAN_TAGS,
   findImage,
   findVideo,
   imageModelsFor,
@@ -49,7 +50,7 @@ export default function App() {
   const videoModel = mode === "video" ? findVideo(videoTab) : null;
   const model = imageModel ?? videoModel!;
   const maxImages = model.maxImages;
-  const tags = mode === "images" ? IMAGE_TAGS : VIDEO_TAGS;
+  const tags = mode === "images" ? IMAGE_TAGS : videoFamily === "wan" ? WAN_TAGS : VIDEO_TAGS;
   const visibleModels = mode === "images" ? imageModelsFor(imageFamily) : videoModelsFor(videoFamily);
 
   useEffect(() => {
@@ -388,7 +389,9 @@ export default function App() {
           placeholder={
             mode === "images"
               ? "Describe how you want to transform the reference images..."
-              : "Describe the scene, motion, and camera work..."
+              : videoFamily === "wan"
+                ? "Name the shot, action, camera, and audio. Quote spoken lines. Say no music if you do not want a soundtrack."
+                : "Describe the scene, motion, and camera work..."
           }
           onChange={(e) => patch({ prompt: e.target.value })}
         />
@@ -491,7 +494,11 @@ export default function App() {
               <div className="toggle-row">
                 <div>
                   <label>Sound</label>
-                  <small>Off unless you turn it on</small>
+                  <small>
+                    {videoFamily === "wan"
+                      ? "On = speech/SFX from the prompt, not extra music"
+                      : "Off unless you turn it on"}
+                  </small>
                 </div>
                 <Switch on={state.audio} onChange={(audio) => patch({ audio })} />
               </div>

@@ -1,5 +1,5 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
-import { findImage, findVideo, imageSize, VIDEO_AUDIO_MODELS, VIDEO_SAFETY_MODELS, VIDEO_WAN_MODELS, wanSize } from "./models";
+import { findImage, findVideo, imageSize, VIDEO_AUDIO_MODELS, VIDEO_SAFETY_MODELS, VIDEO_WAN_MODELS, wanPositivePrompt, wanSize } from "./models";
 import { fileToDataUri, isImageFile, sleep, uuid } from "./media";
 import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
@@ -327,7 +327,9 @@ export async function generateVideo(
     taskType: "videoInference",
     taskUUID,
     model: model.airId,
-    positivePrompt: state.prompt.trim(),
+    positivePrompt: VIDEO_WAN_MODELS.includes(tab)
+      ? wanPositivePrompt(state.prompt, state.audio)
+      : state.prompt.trim(),
     duration,
     outputType: "URL",
     outputFormat: state.videoFormat,
@@ -337,7 +339,7 @@ export async function generateVideo(
 
   if (VIDEO_WAN_MODELS.includes(tab)) {
     if (images.length) {
-      task.inputs = images.length <= 2 ? { frameImages: images } : { referenceImages: images };
+      task.inputs = { referenceImages: images };
       task.resolution = resolution;
     } else {
       const size = wanSize(state.aspect, resolution);
@@ -345,9 +347,10 @@ export async function generateVideo(
       task.height = size.height;
     }
     task.safety = { checkContent: state.safety, mode: "fast" };
-    const settings: Record<string, unknown> = { promptExtend: true };
-    if (VIDEO_AUDIO_MODELS.includes(tab)) settings.audio = state.audio;
-    task.settings = settings;
+    task.settings = {
+      promptExtend: false,
+      audio: state.audio,
+    };
   } else {
     task.resolution = resolution;
     if (images.length) task.inputs = { frameImages: images };

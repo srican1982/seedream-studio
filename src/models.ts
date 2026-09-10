@@ -160,6 +160,7 @@ export const IMAGE_TAGS = [
 ];
 
 export const VIDEO_TAGS = ["Cinematic", "Slow motion", "Dolly zoom", "Aerial drone", "Golden hour"];
+export const WAN_TAGS = ["No background music", "Spoken dialogue", "Natural ambience", "Locked camera", "Product close-up"];
 
 export const ASPECTS: Aspect[] = ["1:1", "16:9", "9:16", "4:3", "3:4", "21:9"];
 export const WAN_ASPECTS: Aspect[] = ["1:1", "16:9", "9:16", "4:3", "3:4"];
@@ -322,6 +323,20 @@ export function imageSize(tab: ImageTabId, aspect: Aspect, quality: Quality) {
 export function wanSize(aspect: Aspect, resolution: "480p" | "720p" | "1080p") {
   const table = WAN_SIZES[resolution];
   return table[aspect] ?? table["16:9"];
+}
+
+export function wanPositivePrompt(prompt: string, audio: boolean) {
+  const text = prompt.trim();
+  if (!audio) return text;
+  const lower = text.toLowerCase();
+  const mentionsMusic = /\b(music|soundtrack|score|song|songs|beat|bpm|melody)\b/.test(lower);
+  const mentionsAudio = /\b(audio|sound|speech|says|said|saying|dialogue|voice|foley|ambience|ambient|spoken)\b/.test(
+    lower
+  );
+  const extras: string[] = [];
+  if (!mentionsMusic) extras.push("Audio: no background music, no soundtrack, no songs.");
+  if (!mentionsAudio) extras.push("Use only natural speech, Foley, and room ambience that match the prompt.");
+  return extras.length ? `${text} ${extras.join(" ")}` : text;
 }
 
 export function emptyTabState(kind: "image" | "video"): TabState {
