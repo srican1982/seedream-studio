@@ -29,5 +29,5 @@ jobs:
         run: chmod +x gradlew && ./gradlew assembleDebug
       - uses: actions/upload-artifact@v4
         with:
-          name: seedream-studio-debug-apk
+          name: seedream-agent-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk

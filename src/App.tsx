@@ -31,6 +31,7 @@ import {
 } from "./models";
 import type { ImageFamily, ImageTabId, Mode, TabId, TabState, VideoFamily, VideoTabId } from "./types";
 import { isNativeApp, pickGalleryImages } from "./native";
+import AgentView from "./AgentView";
 
 export default function App() {
   const [mode, setMode] = useState<Mode>("images");
@@ -55,7 +56,7 @@ export default function App() {
   const state = tabs[activeId];
   const imageModel = mode === "images" ? findImage(imageTab) : null;
   const videoModel = mode === "video" ? findVideo(videoTab) : null;
-  const model = imageModel ?? videoModel!;
+  const model = imageModel ?? videoModel ?? findImage(imageTab);
   const maxImages = model.maxImages;
   const tags = mode === "images" ? (imageFamily === "qwen" ? QWEN_TAGS : IMAGE_TAGS) : videoFamily === "wan" ? WAN_TAGS : VIDEO_TAGS;
   const visibleModels = mode === "images" ? imageModelsFor(imageFamily) : videoModelsFor(videoFamily);
@@ -234,7 +235,7 @@ export default function App() {
       patch({ error: null });
       setSavedNote(
         how === "gallery"
-          ? "Saved to Photos in the Seedream Studio album."
+          ? "Saved to Photos in the Seedream Agent album."
           : how === "share"
             ? "Use Save to Photos or Files in the share sheet."
             : "Download started."
@@ -249,6 +250,7 @@ export default function App() {
   }
 
   const generateLabel = useMemo(() => {
+    if (mode === "agent") return "Run plan";
     if (mode === "images") {
       const brand = imageModel?.family === "qwen" ? "Qwen" : "Seedream";
       return `Generate · ${brand} ${imageModel?.label}`;
@@ -262,8 +264,12 @@ export default function App() {
       <div className="chrome">
         <header className="top">
           <div>
-            <div className="brand">Seedream Studio</div>
-            <div className="sub">Runware · Text / Image to {mode === "images" ? "Image" : "Video"}</div>
+            <div className="brand">Seedream Agent</div>
+            <div className="sub">
+              {mode === "agent"
+                ? "Agent · chat"
+                : `Runware · Text / Image to ${mode === "images" ? "Image" : "Video"}`}
+            </div>
           </div>
           <div className="top-actions">
             <span className={`status ${health.configured ? "on" : "off"}`}>
@@ -276,15 +282,20 @@ export default function App() {
           </div>
         </header>
 
-        <div className="mode-switch">
+        <div className="mode-switch cols-3">
           <button className={mode === "images" ? "on" : ""} onClick={() => setMode("images")}>
             <Landscape /> Images
           </button>
           <button className={mode === "video" ? "on" : ""} onClick={() => setMode("video")}>
             <Camera /> Video
           </button>
+          <button className={mode === "agent" ? "on" : ""} onClick={() => setMode("agent")}>
+            <Spark /> Agent
+          </button>
         </div>
 
+        {mode !== "agent" ? (
+        <>
         <div className="mode-switch family-switch">
           {mode === "images" ? (
             <>
@@ -346,9 +357,15 @@ export default function App() {
             </button>
           ))}
         </div>
+        </>
+        ) : null}
       </div>
 
-      <div className="scroll">
+      <div className={`scroll ${mode === "agent" ? "chat-mode" : ""}`}>
+      {mode === "agent" ? (
+        <AgentView />
+      ) : (
+      <>
       <input
         ref={fileRef}
         className="sr-only"
@@ -628,6 +645,8 @@ export default function App() {
         )}
       </section>
       <div className="nav-spacer" aria-hidden="true" />
+      </>
+      )}
       </div>
 
       {settingsOpen && (

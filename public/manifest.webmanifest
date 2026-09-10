@@ -1,7 +1,7 @@
 {
-  "name": "Seedream Studio",
-  "short_name": "Seedream",
-  "description": "Runware Seedream + Seedance studio for phone",
+  "name": "Seedream Agent",
+  "short_name": "Seedream Agent",
+  "description": "Seedream Agent chat for stills and video",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0b0c10",

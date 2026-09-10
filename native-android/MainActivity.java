@@ -1,4 +1,4 @@
-package studio.seedream.app;
+package studio.seedream.agent;
 
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;

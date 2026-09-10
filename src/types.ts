@@ -1,4 +1,4 @@
-export type Mode = "images" | "video";
+export type Mode = "images" | "video" | "agent";
 export type Quality = "basic" | "high";
 export type ImageFormat = "PNG" | "JPG" | "WEBP";
 export type VideoFormat = "MP4" | "WEBM" | "MOV";

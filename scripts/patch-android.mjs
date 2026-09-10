@@ -4,7 +4,7 @@ import path from "node:path";
 const root = process.cwd();
 const native = path.join(root, "native-android");
 const androidApp = path.join(root, "android", "app", "src", "main");
-const javaDir = path.join(androidApp, "java", "studio", "seedream", "app");
+const javaDir = path.join(androidApp, "java", "studio", "seedream", "agent");
 const manifestPath = path.join(androidApp, "AndroidManifest.xml");
 const stylesPath = path.join(androidApp, "res", "values", "styles.xml");
 const stylesV35Dir = path.join(androidApp, "res", "values-v35");

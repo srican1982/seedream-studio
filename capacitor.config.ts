@@ -1,8 +1,8 @@
 import type { CapacitorConfig } from "@capacitor/cli";
 
 const config: CapacitorConfig = {
-  appId: "studio.seedream.app",
-  appName: "Seedream Studio",
+  appId: "studio.seedream.agent",
+  appName: "Seedream Agent",
   webDir: "dist",
   server: {
     androidScheme: "https",

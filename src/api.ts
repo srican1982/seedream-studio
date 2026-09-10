@@ -358,7 +358,7 @@ function openRouterHeaders(key: string) {
     Authorization: `Bearer ${key}`,
     "Content-Type": "application/json",
     "HTTP-Referer": "https://github.com/srican1982/seedream-studio",
-    "X-Title": "Seedream Studio",
+    "X-Title": "Seedream Agent",
   };
 }
 
@@ -429,6 +429,19 @@ export async function enhancePrompt(input: EnhancePromptInput): Promise<string> 
 
 export function canAutoEnhancePrompt(prompt: string) {
   return prompt.trim().length >= 2;
+}
+
+export async function completeGrok(system: string, user: string, maxTokens = 2500): Promise<string> {
+  const payload = await postOpenRouter(
+    [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    maxTokens
+  );
+  const text = grokOutputText(payload).trim();
+  if (!text) throw new Error("Grok returned no text.");
+  return text;
 }
 
 export async function generateImage(

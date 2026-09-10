@@ -314,6 +314,9 @@ export const VIDEO_SAFETY_MODELS: VideoTabId[] = ["seedance-2-5", "wan-3", "wan-
 export const VIDEO_AUDIO_MODELS: VideoTabId[] = ["seedance-2-5", "seedance-2-0", "wan-3", "wan-3-prime"];
 export const VIDEO_WAN_MODELS: VideoTabId[] = ["wan-3", "wan-3-prime"];
 
+export const AGENT_IMAGE_TABS: ImageTabId[] = ["seedream-5-lite", "seedream-4-5", "qwen-3", "qwen-3-pro"];
+export const AGENT_VIDEO_TABS: VideoTabId[] = ["wan-3", "wan-3-prime", "seedance-1-5"];
+
 export function imageModelsFor(family: ImageFamily) {
   return IMAGE_MODELS.filter((model) => model.family === family);
 }
