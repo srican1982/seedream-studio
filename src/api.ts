@@ -349,7 +349,7 @@ function enhanceBody(messages: Array<{ role: string; content: string }>, maxToke
     stream: false,
     temperature: 0.7,
     max_tokens: maxTokens,
-    provider: { order: ["x-ai"], allow_fallbacks: false },
+    provider: { order: ["xai", "x-ai"], allow_fallbacks: false },
   };
 }
 
@@ -362,8 +362,7 @@ function openRouterHeaders(key: string) {
   };
 }
 
-async function postOpenRouterDirect(messages: Array<{ role: string; content: string }>, maxTokens: number, key: string) {
-  const body = enhanceBody(messages, maxTokens);
+async function openRouterRequest(body: Record<string, unknown>, key: string) {
   if (Capacitor.isNativePlatform()) {
     const res = await CapacitorHttp.post({
       url: OPENROUTER,
@@ -384,6 +383,18 @@ async function postOpenRouterDirect(messages: Array<{ role: string; content: str
   const data = (await res.json()) as Record<string, unknown>;
   if (!res.ok) throw new Error(grokErrorMessage(data, `OpenRouter HTTP ${res.status}`));
   return data;
+}
+
+async function postOpenRouterDirect(messages: Array<{ role: string; content: string }>, maxTokens: number, key: string) {
+  const body = enhanceBody(messages, maxTokens);
+  try {
+    return await openRouterRequest(body, key);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!/no endpoints? found/i.test(message)) throw error;
+    const { provider: _ignored, ...fallback } = body;
+    return openRouterRequest(fallback, key);
+  }
 }
 
 async function postOpenRouter(messages: Array<{ role: string; content: string }>, maxTokens: number) {

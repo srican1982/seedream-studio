@@ -65,7 +65,7 @@ app.post("/api/enhance", async (req, res) => {
         stream: false,
         temperature: typeof body.temperature === "number" ? body.temperature : 0.7,
         max_tokens: typeof body.max_tokens === "number" ? body.max_tokens : 1024,
-        provider: body.provider || { order: ["x-ai"], allow_fallbacks: false },
+        provider: body.provider || { order: ["xai", "x-ai"], allow_fallbacks: false },
       }),
       signal: AbortSignal.timeout(120000),
     });
