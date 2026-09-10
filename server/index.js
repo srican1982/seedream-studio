@@ -19,12 +19,64 @@ function apiKey() {
   return (process.env.RUNWARE_API_KEY || "").trim();
 }
 
+function openRouterKey() {
+  return (process.env.OPENROUTER_API_KEY || "").trim();
+}
+
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+
 app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     configured: Boolean(apiKey()),
+    grok: Boolean(openRouterKey()),
     provider: "runware",
   });
+});
+
+app.post("/api/enhance", async (req, res) => {
+  const key = openRouterKey();
+  if (!key) {
+    res.status(500).json({
+      error: "missingOpenRouterKey",
+      message: "OPENROUTER_API_KEY is not set on the server.",
+    });
+    return;
+  }
+
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  if (!Array.isArray(body.messages)) {
+    res.status(400).json({ error: "invalidBody", message: "Request body must include messages." });
+    return;
+  }
+
+  try {
+    const upstream = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/srican1982/seedream-studio",
+        "X-Title": "Seedream Studio",
+      },
+      body: JSON.stringify({
+        model: body.model || "x-ai/grok-4.6",
+        messages: body.messages,
+        stream: false,
+        temperature: typeof body.temperature === "number" ? body.temperature : 0.7,
+        max_tokens: typeof body.max_tokens === "number" ? body.max_tokens : 1024,
+        provider: body.provider || { order: ["x-ai"], allow_fallbacks: false },
+      }),
+      signal: AbortSignal.timeout(120000),
+    });
+    const text = await upstream.text();
+    res.status(upstream.status);
+    res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/json");
+    res.send(text);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "OpenRouter request failed";
+    res.status(502).json({ error: "upstreamError", message });
+  }
 });
 
 app.post("/api/runware", async (req, res) => {

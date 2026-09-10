@@ -47,6 +47,7 @@ export type TabState = {
   duration: number;
   audio: boolean;
   safety: boolean;
+  enhancePrompt: boolean;
   busy: boolean;
   progress: number | null;
   error: string | null;

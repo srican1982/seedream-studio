@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import {
+  canAutoEnhancePrompt,
   checkHealth,
   downloadResult,
+  enhancePrompt,
   ensureDeviceConfig,
   generateImage,
   generateVideo,
   hasLocalApiKey,
+  hasLocalOpenRouterKey,
   saveApiKey,
+  saveOpenRouterKey,
   type Health,
 } from "./api";
 import { appendTag, fileToDataUri, uuid } from "./media";
@@ -35,11 +39,13 @@ export default function App() {
   const [imageTab, setImageTab] = useState<ImageTabId>("seedream-5-pro");
   const [videoTab, setVideoTab] = useState<VideoTabId>("seedance-2-5");
   const [tabs, setTabs] = useState(initialStates);
-  const [health, setHealth] = useState<Health>({ ok: false, configured: false, native: false });
+  const [health, setHealth] = useState<Health>({ ok: false, configured: false, grok: false, native: false });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
+  const [grokDraft, setGrokDraft] = useState("");
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);
   const [savedNote, setSavedNote] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const tabsRef = useRef(tabs);
@@ -62,6 +68,7 @@ export default function App() {
       if (!h.configured) setSettingsOpen(true);
     })();
     setKeyDraft(hasLocalApiKey() ? "••••••••••••" : "");
+    setGrokDraft(hasLocalOpenRouterKey() ? "••••••••••••" : "");
   }, []);
 
   function patch(partial: Partial<TabState>) {
@@ -132,8 +139,29 @@ export default function App() {
     }
   }
 
-  async function onGenerate() {
+  async function onEnhancePrompt() {
     const prompt = state.prompt.trim();
+    if (prompt.length < 2 || state.busy || enhancing) return;
+    setEnhancing(true);
+    patch({ error: null });
+    try {
+      const next = await enhancePrompt({
+        prompt,
+        kind: mode === "images" ? "image" : "video",
+        family: (imageModel?.family || videoModel?.family) ?? "seedream",
+        refCount: state.images.length,
+        promptMax: model.promptMax,
+      });
+      patch({ prompt: next, error: null });
+    } catch (error) {
+      patch({ error: error instanceof Error ? error.message : "Could not enhance the prompt." });
+    } finally {
+      setEnhancing(false);
+    }
+  }
+
+  async function onGenerate() {
+    let prompt = state.prompt.trim();
     if (prompt.length < (mode === "video" ? 2 : 1)) {
       patch({ error: "Write a prompt first." });
       return;
@@ -148,12 +176,31 @@ export default function App() {
     }
     patch({ busy: true, error: null, progress: 0, result: null });
     try {
+      if (state.enhancePrompt && canAutoEnhancePrompt(prompt)) {
+        setEnhancing(true);
+        prompt = await enhancePrompt({
+          prompt,
+          kind: mode === "images" ? "image" : "video",
+          family: (imageModel?.family || videoModel?.family) ?? "seedream",
+          refCount: state.images.length,
+          promptMax: model.promptMax,
+        });
+        if (imageModel?.family === "qwen" && imageTab !== "qwen-layered" && state.images.length >= 2 && !/\bfirst image\b/i.test(prompt)) {
+          prompt = `${prompt} The first image is the person. The second image is the pose only. Create a new photo. Do not copy either picture.`.slice(
+            0,
+            model.promptMax
+          );
+        }
+        patch({ prompt });
+        setEnhancing(false);
+      }
       const result =
         mode === "images"
           ? await generateImage(imageTab, { ...state, prompt }, (n) => patch({ progress: n }))
           : await generateVideo(videoTab, { ...state, prompt }, (n) => patch({ progress: n }));
       patch({ busy: false, progress: 100, result });
     } catch (error) {
+      setEnhancing(false);
       patch({
         busy: false,
         progress: null,
@@ -388,9 +435,14 @@ export default function App() {
           <span>
             <Pen /> Your Prompt
           </span>
-          <small>
-            {state.prompt.length} / {model.promptMax}
-          </small>
+          <button
+            className="link"
+            type="button"
+            disabled={state.busy || enhancing || state.prompt.trim().length < 2}
+            onClick={() => void onEnhancePrompt()}
+          >
+            {enhancing && !state.busy ? "Enhancing…" : "Enhance with Grok"}
+          </button>
         </div>
         <textarea
           value={state.prompt}
@@ -412,6 +464,15 @@ export default function App() {
               {tag}
             </button>
           ))}
+        </div>
+        <div className="toggle-row prompt-enhance">
+          <div>
+            <label>Grok before Runware</label>
+            <small>
+              {state.prompt.length} / {model.promptMax} · Grok via OpenRouter expands the prompt, then Runware generates
+            </small>
+          </div>
+          <Switch on={state.enhancePrompt} onChange={(enhancePrompt) => patch({ enhancePrompt })} />
         </div>
       </section>
 
@@ -534,9 +595,15 @@ export default function App() {
 
       {state.error && <p className="error">{state.error}</p>}
 
-      <button className="generate" disabled={state.busy} onClick={() => void onGenerate()}>
+      <button className="generate" disabled={state.busy || enhancing} onClick={() => void onGenerate()}>
         {mode === "images" ? <Spark /> : <Clap />}
-        {state.busy ? (state.progress ? `Generating · ${state.progress}%` : "Generating…") : generateLabel}
+        {state.busy
+          ? enhancing
+            ? "Enhancing prompt…"
+            : state.progress
+              ? `Generating · ${state.progress}%`
+              : "Generating…"
+          : generateLabel}
       </button>
 
       <section className="card result">
@@ -571,14 +638,14 @@ export default function App() {
             onSubmit={(e) => {
               e.preventDefault();
               if (keyDraft && !keyDraft.includes("•")) saveApiKey(keyDraft);
+              if (grokDraft && !grokDraft.includes("•")) saveOpenRouterKey(grokDraft);
               setSettingsOpen(false);
               void checkHealth().then(setHealth);
             }}
           >
             <h2>Settings</h2>
             <p>
-              The server uses <code>RUNWARE_API_KEY</code>. For the phone APK, paste your key here — it stays on
-              this device only.
+              Web uses keys from <code>.env</code>. On the phone APK, paste keys here — they stay on this device only.
             </p>
             <label>Runware API key</label>
             <input
@@ -588,18 +655,28 @@ export default function App() {
               placeholder="rw_..."
               onChange={(e) => setKeyDraft(e.target.value)}
             />
+            <label>OpenRouter API key</label>
+            <input
+              type="password"
+              autoComplete="off"
+              value={grokDraft}
+              placeholder="sk-or-v1-..."
+              onChange={(e) => setGrokDraft(e.target.value)}
+            />
             <button type="submit">Save</button>
             <button
               type="button"
               className="ghost"
               onClick={() => {
                 saveApiKey("");
+                saveOpenRouterKey("");
                 setKeyDraft("");
+                setGrokDraft("");
                 setSettingsOpen(false);
                 void checkHealth().then(setHealth);
               }}
             >
-              Clear device key
+              Clear device keys
             </button>
           </form>
         </div>

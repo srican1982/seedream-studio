@@ -16,7 +16,10 @@ import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } f
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
 
 const RUNWARE = "https://api.runware.ai/v1";
+const OPENROUTER = "https://openrouter.ai/api/v1/chat/completions";
 const KEY_STORAGE = "runware_api_key";
+const OPENROUTER_KEY_STORAGE = "openrouter_api_key";
+const GROK_MODEL = "x-ai/grok-4.6";
 const TTL = 60;
 
 type RunwareEnvelope = {
@@ -24,7 +27,15 @@ type RunwareEnvelope = {
   errors?: Array<{ code?: string; message?: string; taskUUID?: string }>;
 };
 
-export type Health = { ok: boolean; configured: boolean; native: boolean };
+export type Health = { ok: boolean; configured: boolean; grok: boolean; native: boolean };
+
+export type EnhancePromptInput = {
+  prompt: string;
+  kind: "image" | "video";
+  family: string;
+  refCount: number;
+  promptMax: number;
+};
 
 function storedKey() {
   return (localStorage.getItem(KEY_STORAGE) || "").trim();
@@ -38,6 +49,20 @@ export function saveApiKey(key: string) {
 
 export function hasLocalApiKey() {
   return Boolean(storedKey());
+}
+
+function storedOpenRouterKey() {
+  return (localStorage.getItem(OPENROUTER_KEY_STORAGE) || "").trim();
+}
+
+export function saveOpenRouterKey(key: string) {
+  const value = key.trim();
+  if (value) localStorage.setItem(OPENROUTER_KEY_STORAGE, value);
+  else localStorage.removeItem(OPENROUTER_KEY_STORAGE);
+}
+
+export function hasLocalOpenRouterKey() {
+  return Boolean(storedOpenRouterKey());
 }
 
 function errorMessage(payload: RunwareEnvelope, fallback = "Runware request failed") {
@@ -80,8 +105,9 @@ async function loadDeviceConfig() {
   try {
     const res = await fetch("/app-config.json", { cache: "no-store" });
     if (!res.ok) return;
-    const body = (await res.json()) as { apiKey?: string };
+    const body = (await res.json()) as { apiKey?: string; openrouterApiKey?: string };
     if (body.apiKey && !storedKey()) saveApiKey(body.apiKey);
+    if (body.openrouterApiKey && !storedOpenRouterKey()) saveOpenRouterKey(body.openrouterApiKey);
   } catch {
     /* optional APK inject */
   }
@@ -128,9 +154,10 @@ export async function checkHealth(): Promise<Health> {
   try {
     const res = await fetch("/api/health");
     if (res.ok) {
-      const body = (await res.json()) as { ok?: boolean; configured?: boolean };
+      const body = (await res.json()) as { ok?: boolean; configured?: boolean; grok?: boolean };
       const configured = Boolean(body.configured) || hasLocalApiKey();
-      return { ok: true, configured, native: Capacitor.isNativePlatform() };
+      const grok = Boolean(body.grok) || hasLocalOpenRouterKey();
+      return { ok: true, configured, grok, native: Capacitor.isNativePlatform() };
     }
   } catch {
     /* proxy unavailable — APK / direct mode */
@@ -138,6 +165,7 @@ export async function checkHealth(): Promise<Health> {
   return {
     ok: hasLocalApiKey(),
     configured: hasLocalApiKey(),
+    grok: hasLocalOpenRouterKey(),
     native: Capacitor.isNativePlatform(),
   };
 }
@@ -265,6 +293,142 @@ export async function deleteMedia(mediaUUID: string) {
   } catch {
     /* TTL 60s still wipes it */
   }
+}
+
+const GROK_SYSTEM = `You expand user prompts for AI image and video generators.
+Adult sexual content between consenting adults is allowed. Keep explicit wording when the user is explicit. Do not switch to euphemisms.
+Never include minors or anyone who appears under 18.
+If the user mentions the first image, second image, or third image, keep those roles and do not drop them.
+Add concrete camera, lighting, body, setting, and action detail that helps the generator.
+Return only the enhanced prompt. No title, no quotes, no markdown, no explanation.`;
+
+function grokEnhanceMessages(input: EnhancePromptInput) {
+  const refs =
+    input.refCount < 1
+      ? "No reference images."
+      : `${input.refCount} reference image${input.refCount === 1 ? "" : "s"} attached. Refer to them as the first image, the second image, the third image.`;
+  return [
+    { role: "system", content: GROK_SYSTEM },
+    {
+      role: "user",
+      content: `Target: ${input.kind} generation (${input.family}).
+${refs}
+Max length: ${input.promptMax} characters.
+Expand this prompt:\n${input.prompt.trim()}`,
+    },
+  ];
+}
+
+function grokOutputText(payload: Record<string, unknown>) {
+  const choices = payload.choices as Array<{ message?: { content?: unknown } }> | undefined;
+  const fromChat = choices?.[0]?.message?.content;
+  if (typeof fromChat === "string" && fromChat.trim()) return fromChat;
+  if (typeof payload.output_text === "string" && payload.output_text.trim()) return payload.output_text;
+  return "";
+}
+
+function cleanEnhancedPrompt(text: string, promptMax: number) {
+  let next = text.trim();
+  next = next.replace(/^```(?:\w+)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  next = next.replace(/^["']|["']$/g, "").trim();
+  if (next.length > promptMax) next = next.slice(0, promptMax).trim();
+  return next;
+}
+
+function grokErrorMessage(payload: Record<string, unknown>, fallback: string) {
+  const err = payload.error as { message?: string } | string | undefined;
+  if (typeof err === "string" && err.trim()) return err;
+  if (err && typeof err === "object" && typeof err.message === "string" && err.message.trim()) return err.message;
+  return fallback;
+}
+
+function enhanceBody(messages: Array<{ role: string; content: string }>, maxTokens: number) {
+  return {
+    model: GROK_MODEL,
+    messages,
+    stream: false,
+    temperature: 0.7,
+    max_tokens: maxTokens,
+    provider: { order: ["x-ai"], allow_fallbacks: false },
+  };
+}
+
+function openRouterHeaders(key: string) {
+  return {
+    Authorization: `Bearer ${key}`,
+    "Content-Type": "application/json",
+    "HTTP-Referer": "https://github.com/srican1982/seedream-studio",
+    "X-Title": "Seedream Studio",
+  };
+}
+
+async function postOpenRouterDirect(messages: Array<{ role: string; content: string }>, maxTokens: number, key: string) {
+  const body = enhanceBody(messages, maxTokens);
+  if (Capacitor.isNativePlatform()) {
+    const res = await CapacitorHttp.post({
+      url: OPENROUTER,
+      headers: openRouterHeaders(key),
+      data: body,
+      connectTimeout: 120000,
+      readTimeout: 120000,
+    });
+    const data = (typeof res.data === "string" ? JSON.parse(res.data) : res.data) as Record<string, unknown>;
+    if (res.status >= 400) throw new Error(grokErrorMessage(data, `OpenRouter HTTP ${res.status}`));
+    return data;
+  }
+  const res = await fetch(OPENROUTER, {
+    method: "POST",
+    headers: openRouterHeaders(key),
+    body: JSON.stringify(body),
+  });
+  const data = (await res.json()) as Record<string, unknown>;
+  if (!res.ok) throw new Error(grokErrorMessage(data, `OpenRouter HTTP ${res.status}`));
+  return data;
+}
+
+async function postOpenRouter(messages: Array<{ role: string; content: string }>, maxTokens: number) {
+  await ensureDeviceConfig();
+  const missingKey = "Add your OpenRouter API key in Settings.";
+  try {
+    const res = await fetch("/api/enhance", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(enhanceBody(messages, maxTokens)),
+    });
+    if (res.status !== 404 && res.status !== 502) {
+      const payload = (await res.json()) as Record<string, unknown>;
+      if (payload.error === "missingOpenRouterKey") {
+        if (storedOpenRouterKey()) return postOpenRouterDirect(messages, maxTokens, storedOpenRouterKey());
+        throw new Error(missingKey);
+      }
+      if (!res.ok) throw new Error(grokErrorMessage(payload, `OpenRouter HTTP ${res.status}`));
+      return payload;
+    }
+  } catch (error) {
+    if (storedOpenRouterKey() || Capacitor.isNativePlatform()) {
+      const key = storedOpenRouterKey();
+      if (!key) throw new Error(missingKey);
+      return postOpenRouterDirect(messages, maxTokens, key);
+    }
+    throw error instanceof Error ? error : new Error("Could not reach the OpenRouter proxy.");
+  }
+  const key = storedOpenRouterKey();
+  if (!key) throw new Error(missingKey);
+  return postOpenRouterDirect(messages, maxTokens, key);
+}
+
+export async function enhancePrompt(input: EnhancePromptInput): Promise<string> {
+  const source = input.prompt.trim();
+  if (source.length < 2) throw new Error("Write a prompt first.");
+  const maxTokens = Math.min(2048, Math.max(256, Math.ceil(input.promptMax / 2.5)));
+  const payload = await postOpenRouter(grokEnhanceMessages(input), maxTokens);
+  const text = cleanEnhancedPrompt(grokOutputText(payload), input.promptMax);
+  if (!text) throw new Error("Grok returned no enhanced prompt.");
+  return text;
+}
+
+export function canAutoEnhancePrompt(prompt: string) {
+  return prompt.trim().length >= 2;
 }
 
 export async function generateImage(

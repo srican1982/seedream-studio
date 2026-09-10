@@ -398,6 +398,7 @@ export function emptyTabState(kind: "image" | "video"): TabState {
     duration: 5,
     audio: false,
     safety: false,
+    enhancePrompt: true,
     busy: false,
     progress: null,
     error: null,
