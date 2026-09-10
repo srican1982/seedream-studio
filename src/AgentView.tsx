@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import {
   AGENT_MODEL_CHIPS,
+  chipInText,
   describePlan,
   emptyAgentMemory,
   isRememberOnly,
@@ -9,6 +10,7 @@ import {
   resultToStill,
   runAgentShot,
   saveAgentMemory,
+  toggleChipToken,
   type AgentMemory,
   type AgentMessage,
 } from "./agent";
@@ -16,13 +18,6 @@ import { downloadResult } from "./api";
 import { fileToDataUri, uuid } from "./media";
 import { isNativeApp, pickGalleryImages } from "./native";
 import type { LocalImage, StudioResult } from "./types";
-
-function toggleToken(text: string, token: string) {
-  if (text.includes(token)) {
-    return text.replaceAll(token, "").replace(/\s+/g, " ").trim();
-  }
-  return `${text.trim()}${text.trim() ? " " : ""}${token} `.replace(/\s+$/, " ");
-}
 
 export default function AgentView() {
   const [memory, setMemory] = useState<AgentMemory>(emptyAgentMemory);
@@ -77,7 +72,7 @@ export default function AgentView() {
   }
 
   function addChip(token: string) {
-    setDraft((prev) => toggleToken(prev, token));
+    setDraft((prev) => toggleChipToken(prev, token));
     inputRef.current?.focus();
   }
 
@@ -231,7 +226,7 @@ export default function AgentView() {
             <button
               key={chip.id}
               type="button"
-              className={draft.includes(chip.token) ? "on" : ""}
+              className={chipInText(draft, chip.token) ? "on" : ""}
               onClick={() => addChip(chip.token)}
             >
               {chip.label}

@@ -47,14 +47,54 @@ export type AgentModelChip = {
 };
 
 export const AGENT_MODEL_CHIPS: AgentModelChip[] = [
-  { id: "seedream-5-lite", kind: "image", label: "Seedream 5.0 Lite", token: "@SeedreamLite" },
-  { id: "seedream-4-5", kind: "image", label: "Seedream 4.5", token: "@Seedream45" },
-  { id: "qwen-3", kind: "image", label: "Qwen 3.0", token: "@Qwen3" },
-  { id: "qwen-3-pro", kind: "image", label: "Qwen 3.0 Pro", token: "@QwenPro" },
-  { id: "wan-3", kind: "video", label: "Wan 3.0", token: "@Wan3" },
-  { id: "wan-3-prime", kind: "video", label: "Wan 3.0 Prime", token: "@WanPrime" },
-  { id: "seedance-1-5", kind: "video", label: "Seedance 1.5 Pro", token: "@Seedance15" },
+  { id: "seedream-5-lite", kind: "image", label: "Seedream 5.0 Lite", token: "Seedream 5.0 Lite" },
+  { id: "seedream-4-5", kind: "image", label: "Seedream 4.5", token: "Seedream 4.5" },
+  { id: "qwen-3", kind: "image", label: "Qwen 3.0", token: "Qwen 3.0" },
+  { id: "qwen-3-pro", kind: "image", label: "Qwen 3.0 Pro", token: "Qwen 3.0 Pro" },
+  { id: "wan-3", kind: "video", label: "Wan 3.0", token: "Wan 3.0" },
+  { id: "wan-3-prime", kind: "video", label: "Wan 3.0 Prime", token: "Wan 3.0 Prime" },
+  { id: "seedance-1-5", kind: "video", label: "Seedance 1.5 Pro", token: "Seedance 1.5 Pro" },
 ];
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function longerChipTokens(token: string) {
+  return AGENT_MODEL_CHIPS.map((chip) => chip.token)
+    .filter((item) => item !== token && item.includes(token))
+    .sort((a, b) => b.length - a.length);
+}
+
+export function chipInText(text: string, token: string) {
+  let check = ` ${text} `;
+  for (const extra of longerChipTokens(token)) {
+    check = check.replaceAll(extra, " ");
+  }
+  return new RegExp(`(?:^|\\s)${escapeRegExp(token)}(?=\\s|$)`).test(check);
+}
+
+export function toggleChipToken(text: string, token: string) {
+  if (chipInText(text, token)) {
+    let next = text;
+    const extras = longerChipTokens(token);
+    extras.forEach((extra, index) => {
+      next = next.replaceAll(extra, `\0${index}\0`);
+    });
+    next = next.replaceAll(token, "");
+    extras.forEach((extra, index) => {
+      next = next.replaceAll(`\0${index}\0`, extra);
+    });
+    return next.replace(/\s+/g, " ").trim();
+  }
+  return `${text.trim()}${text.trim() ? " " : ""}${token}`;
+}
+
+export function modelFromText(text: string, kind: AgentShotKind) {
+  return AGENT_MODEL_CHIPS.filter((chip) => chip.kind === kind)
+    .sort((a, b) => b.token.length - a.token.length)
+    .find((chip) => chipInText(text, chip.token))?.id;
+}
 
 export type AgentMemory = {
   brief: string;
@@ -154,7 +194,7 @@ Rules:
 - Video models only: wan-3, wan-3-prime, seedance-1-5.
 - Video hard limits: wan-3 and wan-3-prime max 30 seconds per clip. seedance-1-5 max 10 seconds per clip.
 - If the user wants more than one clip's worth of video, split into sequential clips. Do not invent one oversized clip.
-- If the user tagged models with @SeedreamLite @Seedream45 @Qwen3 @QwenPro @Wan3 @WanPrime @Seedance15, use those models.
+- If the user named models in the chat (Seedream 5.0 Lite, Seedream 4.5, Qwen 3.0, Qwen 3.0 Pro, Wan 3.0, Wan 3.0 Prime, Seedance 1.5 Pro), use those models.
 - Honor asked video resolution: 480p, 720p, or 1080p. Default 720p.
 - Each image shot is one still. Each video shot is one clip.
 - Only plan NEW work for the latest user message. Do not repeat shots that were already done.
@@ -213,9 +253,12 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
   for (const row of parsed.shots || []) {
     const kind: AgentShotKind = row.kind === "video" ? "video" : "image";
     const asked = String(row.model || "");
-    const model = kind === "image"
-      ? isImageTab(asked) ? asked : defaultImageModel()
-      : isVideoTab(asked) ? asked : defaultVideoModel();
+    const tagged = modelFromText(brief, kind);
+    const model = tagged
+      ? tagged
+      : kind === "image"
+        ? isImageTab(asked) ? asked : defaultImageModel()
+        : isVideoTab(asked) ? asked : defaultVideoModel();
     const duration = kind === "video" ? clipVideoDuration(model as VideoTabId, Number(row.duration) || 30) : 0;
     const resolution = kind === "video" ? clipVideoResolution(model as VideoTabId, String(row.resolution || brief)) : "720p";
     shots.push({
