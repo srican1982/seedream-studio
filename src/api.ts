@@ -11,7 +11,7 @@ import {
   wanPositivePrompt,
   wanSize,
 } from "./models";
-import { fileToDataUri, isImageFile, sleep, uuid } from "./media";
+import { fileToDataUri, isImageFile, isUsableReferenceImage, sleep, uuid } from "./media";
 import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
 
@@ -461,7 +461,7 @@ export async function generateImage(
   onProgress?: (n: number) => void
 ): Promise<StudioResult> {
   const model = findImage(tab);
-  const refs = state.images.map((img) => img.dataUri).filter(Boolean);
+  const refs = state.images.map((img) => img.dataUri).filter(isUsableReferenceImage);
   if (model.requiresReference && refs.length < 1) {
     throw new Error("Add one reference image for Qwen Layered.");
   }
@@ -523,7 +523,7 @@ export async function generateVideo(
   const taskUUID = uuid();
   const duration = model.durations.includes(state.duration) ? state.duration : model.durations[0];
   const resolution = model.resolutions.includes(state.resolution) ? state.resolution : model.resolutions[0];
-  const images = state.images.map((img) => img.dataUri).filter(Boolean);
+  const images = state.images.map((img) => img.dataUri).filter(isUsableReferenceImage);
   const task: Record<string, unknown> = {
     taskType: "videoInference",
     taskUUID,

@@ -49,6 +49,21 @@ export function isImageFile(file: File) {
   return /\.(jpe?g|png|webp|gif|heic|heif|bmp|avif)$/i.test(file.name);
 }
 
+export function isUsableReferenceImage(value: string) {
+  if (!value) return false;
+  if (/^data:image\/(png|jpe?g|webp|heic|heif|avif);base64,/i.test(value)) {
+    return (value.split(",")[1] || "").replace(/\s/g, "").length > 32;
+  }
+  return /^https?:\/\//i.test(value) && !/localhost|_capacitor_file_|_capacitor_content_/i.test(value);
+}
+
+export async function blobToJpegDataUri(blob: Blob, maxEdge = 1400, quality = 0.82): Promise<string | null> {
+  const mime = blob.type.startsWith("image/") ? blob.type : "image/jpeg";
+  const file = new File([blob], "still.jpg", { type: mime });
+  const uri = await fileToDataUri(file, maxEdge, quality);
+  return isUsableReferenceImage(uri) ? uri : null;
+}
+
 export async function fileToDataUri(file: File, maxEdge = 1600, quality = 0.88): Promise<string> {
   try {
     return await compressViaCanvas(file, maxEdge, quality);

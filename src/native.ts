@@ -136,6 +136,19 @@ export async function saveAndShare(blob: Blob, filename: string): Promise<SaveMe
   }
 }
 
+export async function localFileToDataUri(path: string, mime = "image/jpeg"): Promise<string | null> {
+  if (!path) return null;
+  try {
+    const read = await Filesystem.readFile({ path });
+    const data = read.data;
+    if (typeof data !== "string" || !data) return null;
+    if (data.startsWith("data:image/")) return data;
+    return `data:${mime};base64,${data}`;
+  } catch {
+    return null;
+  }
+}
+
 export async function persistNativeResult(result: {
   url: string;
   filename: string;

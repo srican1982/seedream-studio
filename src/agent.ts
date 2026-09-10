@@ -1,6 +1,8 @@
+import { CapacitorHttp } from "@capacitor/core";
 import { completeGrok, generateImage, generateVideo } from "./api";
-import { fileToDataUri, uuid } from "./media";
+import { blobToJpegDataUri, isUsableReferenceImage, uuid } from "./media";
 import { AGENT_IMAGE_TABS, AGENT_VIDEO_TABS, emptyTabState, findImage, findVideo } from "./models";
+import { isNativeApp, localFileToDataUri } from "./native";
 import type { Aspect, ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
 
 type VideoResolution = "480p" | "720p" | "1080p";
@@ -280,28 +282,66 @@ function refsForShot(memory: AgentMemory, model: ImageTabId | VideoTabId, kind: 
   const max = kind === "image" ? findImage(model as ImageTabId).maxImages : findVideo(model as VideoTabId).maxImages;
   const chain: LocalImage[] = [];
   for (const img of memory.images) {
-    if (img.dataUri) chain.push(img);
+    if (isUsableReferenceImage(img.dataUri)) chain.push(img);
   }
-  if (memory.lastStill?.dataUri && !chain.some((img) => img.id === memory.lastStill?.id)) {
+  if (
+    memory.lastStill &&
+    isUsableReferenceImage(memory.lastStill.dataUri) &&
+    !chain.some((img) => img.id === memory.lastStill?.id || img.dataUri === memory.lastStill?.dataUri)
+  ) {
     chain.push(memory.lastStill);
   }
   return chain.slice(0, Math.max(1, max));
 }
 
+async function fetchImageBlob(url: string): Promise<Blob | null> {
+  if (url.startsWith("data:image/")) {
+    const res = await fetch(url);
+    return res.blob();
+  }
+  const publicHttp = /^https?:\/\//i.test(url) && !/localhost|_capacitor_file_|_capacitor_content_/i.test(url);
+  if (isNativeApp() && publicHttp) {
+    const http = await CapacitorHttp.get({ url, responseType: "blob", readTimeout: 60000 });
+    if (http.status >= 400) return null;
+    const raw = String(http.data || "");
+    if (!raw) return null;
+    const header = http.headers && typeof http.headers === "object" ? (http.headers as Record<string, string>) : {};
+    const mime = String(header["content-type"] || header["Content-Type"] || "image/jpeg").split(";")[0];
+    const safeMime = /^image\//i.test(mime) ? mime : "image/jpeg";
+    return (await fetch(`data:${safeMime};base64,${raw}`)).blob();
+  }
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  return res.blob();
+}
+
+async function sourceToJpegDataUri(source: string): Promise<string | null> {
+  if (!source) return null;
+  if (isUsableReferenceImage(source) && source.startsWith("data:image/jpeg")) return source;
+  if (!source.startsWith("http") && !source.startsWith("data:") && isNativeApp()) {
+    const local = await localFileToDataUri(source);
+    if (local) {
+      const blob = await fetchImageBlob(local);
+      if (blob) return blobToJpegDataUri(blob);
+    }
+  }
+  const blob = await fetchImageBlob(source);
+  if (!blob) return null;
+  return blobToJpegDataUri(blob);
+}
+
 export async function resultToStill(result: StudioResult): Promise<LocalImage | null> {
   if (result.kind !== "image") return captureVideoStill(result.url);
-  try {
-    let dataUri = result.url;
-    if (!dataUri.startsWith("data:")) {
-      const res = await fetch(result.localPath || result.remoteUrl || result.url);
-      const blob = await res.blob();
-      const file = new File([blob], result.filename || "still.jpg", { type: blob.type || "image/jpeg" });
-      dataUri = await fileToDataUri(file, 1400, 0.82);
+  const sources = [result.remoteUrl, result.url, result.localPath].filter((item): item is string => Boolean(item));
+  for (const source of sources) {
+    try {
+      const dataUri = await sourceToJpegDataUri(source);
+      if (dataUri) return { id: uuid(), name: "last-still", preview: dataUri, dataUri };
+    } catch {
+      /* try next source */
     }
-    return { id: uuid(), name: "last-still", preview: dataUri, dataUri };
-  } catch {
-    return null;
   }
+  return null;
 }
 
 async function captureVideoStill(url: string): Promise<LocalImage | null> {
