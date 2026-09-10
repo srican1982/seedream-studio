@@ -262,6 +262,13 @@ button { cursor: pointer; }
   align-items: flex-start;
 }
 
+.ref-hint {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
 textarea {
   width: 100%;
   min-height: 110px;

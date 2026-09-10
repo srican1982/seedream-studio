@@ -159,6 +159,13 @@ export const IMAGE_TAGS = [
   "Studio portrait",
 ];
 
+export const QWEN_TAGS = [
+  "The first image is the person",
+  "The second image is the pose only",
+  "Create a new photo",
+  "Keep identity from the first image",
+];
+
 export const VIDEO_TAGS = ["Cinematic", "Slow motion", "Dolly zoom", "Aerial drone", "Golden hour"];
 export const WAN_TAGS = ["No background music", "Spoken dialogue", "Natural ambience", "Locked camera", "Product close-up"];
 
@@ -337,6 +344,46 @@ export function wanPositivePrompt(prompt: string, audio: boolean) {
   if (!mentionsMusic) extras.push("Audio: no background music, no soundtrack, no songs.");
   if (!mentionsAudio) extras.push("Use only natural speech, Foley, and room ambience that match the prompt.");
   return extras.length ? `${text} ${extras.join(" ")}` : text;
+}
+
+const QWEN_REF_MAX_PIXELS = 2_250_000;
+
+export function fitQwenRefSize(width: number, height: number) {
+  if (width * height <= QWEN_REF_MAX_PIXELS) return { width, height };
+  const scale = Math.sqrt(QWEN_REF_MAX_PIXELS / (width * height));
+  const snap = (n: number) => Math.max(512, Math.round((n * scale) / 16) * 16);
+  let nextWidth = snap(width);
+  let nextHeight = snap(height);
+  while (nextWidth * nextHeight > QWEN_REF_MAX_PIXELS && (nextWidth > 512 || nextHeight > 512)) {
+    if (nextWidth >= nextHeight && nextWidth > 512) nextWidth -= 16;
+    else if (nextHeight > 512) nextHeight -= 16;
+    else break;
+  }
+  return { width: nextWidth, height: nextHeight };
+}
+
+export function qwenPositivePrompt(prompt: string, refCount: number) {
+  let text = prompt.trim();
+  if (refCount < 1) return text;
+
+  text = text
+    .replace(/\bimages?\s*#?\s*1\b/gi, "the first image")
+    .replace(/\bimages?\s*#?\s*2\b/gi, "the second image")
+    .replace(/\bimages?\s*#?\s*3\b/gi, "the third image")
+    .replace(/\bthe\s+the\s+(first|second|third)\s+image\b/gi, "the $1 image");
+
+  if (refCount < 2) return text;
+
+  if (/\bpose\b/i.test(text)) {
+    text = `${text} Keep the identity, face, body, and clothes from the first image. Use only the body pose from the second image. Ignore the face and clothes in the second image.`;
+  }
+  if (!/\b(compose|combine|create (one |a )?new|new (photo|image|photograph))\b/i.test(text)) {
+    text = `${text} Create one new image using every reference.`;
+  }
+  if (!/\bdo not (copy|return|output)\b/i.test(text)) {
+    text = `${text} Do not return a copy of any input image.`;
+  }
+  return text;
 }
 
 export function emptyTabState(kind: "image" | "video"): TabState {

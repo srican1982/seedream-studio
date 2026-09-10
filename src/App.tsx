@@ -13,6 +13,7 @@ import { appendTag, fileToDataUri, uuid } from "./media";
 import {
   ASPECTS,
   IMAGE_TAGS,
+  QWEN_TAGS,
   VIDEO_AUDIO_MODELS,
   VIDEO_SAFETY_MODELS,
   VIDEO_TAGS,
@@ -50,7 +51,7 @@ export default function App() {
   const videoModel = mode === "video" ? findVideo(videoTab) : null;
   const model = imageModel ?? videoModel!;
   const maxImages = model.maxImages;
-  const tags = mode === "images" ? IMAGE_TAGS : videoFamily === "wan" ? WAN_TAGS : VIDEO_TAGS;
+  const tags = mode === "images" ? (imageFamily === "qwen" ? QWEN_TAGS : IMAGE_TAGS) : videoFamily === "wan" ? WAN_TAGS : VIDEO_TAGS;
   const visibleModels = mode === "images" ? imageModelsFor(imageFamily) : videoModelsFor(videoFamily);
 
   useEffect(() => {
@@ -341,7 +342,9 @@ export default function App() {
           <em>
             {imageModel?.requiresReference
               ? "Qwen Layered needs one picture"
-              : "Allow gallery access · add several · they all go in one request"}
+              : imageModel?.family === "qwen"
+                ? "Add up to 3 · first image, second image, third image"
+                : "Allow gallery access · add several · they all go in one request"}
           </em>
         </button>
 
@@ -369,6 +372,12 @@ export default function App() {
             </button>
           )}
         </div>
+        {imageModel?.family === "qwen" && imageTab !== "qwen-layered" && state.images.length >= 2 ? (
+          <p className="ref-hint">
+            Qwen needs roles in the prompt: “the first image is the person, the second image is the pose only.” It will
+            copy photo 1 if you do not say that.
+          </p>
+        ) : null}
         <p className="privacy">
           <Shield /> Zero-retention · inputs inline · outputs auto-wiped from Runware in 60s
         </p>
@@ -388,7 +397,9 @@ export default function App() {
           maxLength={model.promptMax}
           placeholder={
             mode === "images"
-              ? "Describe how you want to transform the reference images..."
+              ? imageModel?.family === "qwen" && state.images.length >= 2
+                ? "The first image is the person. The second image is the pose only. Create a new photo — do not copy either picture."
+                : "Describe how you want to transform the reference images..."
               : videoFamily === "wan"
                 ? "Name the shot, action, camera, and audio. Quote spoken lines. Say no music if you do not want a soundtrack."
                 : "Describe the scene, motion, and camera work..."

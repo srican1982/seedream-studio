@@ -1,5 +1,16 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
-import { findImage, findVideo, imageSize, VIDEO_AUDIO_MODELS, VIDEO_SAFETY_MODELS, VIDEO_WAN_MODELS, wanPositivePrompt, wanSize } from "./models";
+import {
+  findImage,
+  findVideo,
+  fitQwenRefSize,
+  imageSize,
+  qwenPositivePrompt,
+  VIDEO_AUDIO_MODELS,
+  VIDEO_SAFETY_MODELS,
+  VIDEO_WAN_MODELS,
+  wanPositivePrompt,
+  wanSize,
+} from "./models";
 import { fileToDataUri, isImageFile, sleep, uuid } from "./media";
 import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
@@ -267,11 +278,12 @@ export async function generateImage(
     throw new Error("Add one reference image for Qwen Layered.");
   }
   const taskUUID = uuid();
+  const qwenRefs = model.family === "qwen" && tab !== "qwen-layered";
   const task: Record<string, unknown> = {
     taskType: "imageInference",
     taskUUID,
     model: model.airId,
-    positivePrompt: state.prompt.trim(),
+    positivePrompt: qwenRefs ? qwenPositivePrompt(state.prompt, refs.length) : state.prompt.trim(),
     outputType: "URL",
     outputFormat: tab === "qwen-layered" ? "TIFF" : state.imageFormat,
     safety: { checkContent: state.safety },
@@ -280,13 +292,14 @@ export async function generateImage(
   };
   if (!model.skipDimensions) {
     const size = imageSize(tab, state.aspect, state.quality);
-    task.width = size.width;
-    task.height = size.height;
+    const fitted = qwenRefs && refs.length ? fitQwenRefSize(size.width, size.height) : size;
+    task.width = fitted.width;
+    task.height = fitted.height;
   }
   if (refs.length) {
     task.inputs = { referenceImages: refs };
-    if (model.family === "qwen" && tab !== "qwen-layered") {
-      task.providerSettings = { alibaba: { promptExtend: true, promptExtendMode: "direct" } };
+    if (qwenRefs) {
+      task.providerSettings = { alibaba: { promptExtend: false } };
     }
   }
   if (tab === "seedream-5-pro" && state.quality === "high") {
