@@ -1,18 +1,26 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import {
   AGENT_MODEL_CHIPS,
+  approvalText,
   chipInText,
   describePlan,
   emptyAgentMemory,
+  isContinue,
+  isRecreate,
   isRememberOnly,
+  lastActionableShot,
   loadAgentMemory,
+  nextPendingShot,
   planAgentJob,
+  recreateShot,
+  resetShot,
   resultToStill,
   runAgentShot,
   saveAgentMemory,
   toggleChipToken,
   type AgentMemory,
   type AgentMessage,
+  type AgentShot,
 } from "./agent";
 import { downloadResult } from "./api";
 import { fileToDataUri, uuid } from "./media";
@@ -55,7 +63,7 @@ export default function AgentView() {
     const files = list ? Array.from(list) : [];
     if (!files.length) return;
     const extra: LocalImage[] = [];
-    for (const file of files.slice(0, Math.max(0, 6 - pending.length))) {
+    for (const file of files.slice(0, Math.max(0, 8 - pending.length))) {
       const dataUri = await fileToDataUri(file);
       extra.push({ id: uuid(), name: file.name || "photo", preview: dataUri, dataUri });
     }
@@ -64,7 +72,7 @@ export default function AgentView() {
 
   async function pickPhotos() {
     if (isNativeApp()) {
-      const files = await pickGalleryImages(Math.max(1, 6 - pending.length));
+      const files = await pickGalleryImages(Math.max(1, 8 - pending.length));
       await addFiles(files);
       return;
     }
@@ -81,13 +89,46 @@ export default function AgentView() {
     if (!still) return;
     setPending((prev) => {
       if (prev.some((img) => img.preview === still.preview || img.dataUri === still.dataUri)) return prev;
-      return [...prev, still].slice(0, 6);
+      return [...prev, still].slice(0, 8);
     });
     inputRef.current?.focus();
   }
 
-  async function onSend() {
-    const text = draft.trim();
+  async function runOne(current: AgentMemory, shot: AgentShot) {
+    setProgress(`Running ${shot.title}…`);
+    current = {
+      ...current,
+      waitingForApproval: false,
+      shots: current.shots.map((item) => (item.id === shot.id ? { ...item, status: "running" } : item)),
+    };
+    commit(current);
+    try {
+      current = await runAgentShot(current, shot.id);
+    } catch (error) {
+      current = {
+        ...current,
+        waitingForApproval: true,
+        shots: current.shots.map((item) =>
+          item.id === shot.id
+            ? { ...item, status: "error", error: error instanceof Error ? error.message : "Failed." }
+            : item
+        ),
+      };
+    }
+    const done = current.shots.find((item) => item.id === shot.id);
+    current = pushMessage(current, {
+      id: uuid(),
+      role: "assistant",
+      text: `${done?.status === "done" ? "Done" : "Failed"}: ${shot.title}\n\n${approvalText(current, done || shot)}`,
+      result: done?.result,
+      createdAt: Date.now(),
+    });
+    commit(current);
+    return current;
+  }
+
+  async function onSend(preset?: string) {
+    const text = (preset ?? draft).trim();
     if ((!text && pending.length === 0) || busy) return;
     const images = pending;
     const userMessage: AgentMessage = {
@@ -101,7 +142,8 @@ export default function AgentView() {
       {
         ...memoryRef.current,
         brief: userMessage.text,
-        images: [...memoryRef.current.images, ...images].slice(-8),
+        images: images.length ? images : memoryRef.current.images,
+        userRefs: images.length ? images : memoryRef.current.userRefs,
         notes: isRememberOnly(userMessage.text)
           ? [memoryRef.current.notes, userMessage.text.replace(/^\s*remember\b[:\s-]*/i, "")].filter(Boolean).join("\n")
           : memoryRef.current.notes,
@@ -127,11 +169,42 @@ export default function AgentView() {
         return;
       }
 
+      if (isRecreate(userMessage.text)) {
+        const target = recreateShot(current, userMessage.text);
+        if (!target) {
+          commit(pushMessage(current, { id: uuid(), role: "assistant", text: "Nothing to recreate yet.", createdAt: Date.now() }));
+          return;
+        }
+        current = resetShot(current, target.id);
+        commit(current);
+        await runOne(current, { ...target, status: "pending" });
+        return;
+      }
+
+      if (isContinue(userMessage.text)) {
+        const next = nextPendingShot(current);
+        if (!next) {
+          commit(
+            pushMessage(current, {
+              id: uuid(),
+              role: "assistant",
+              text: lastActionableShot(current)
+                ? "Nothing waiting. Ask for a video, or recreate a part."
+                : "Nothing waiting. Tell me what to make.",
+              createdAt: Date.now(),
+            })
+          );
+          return;
+        }
+        await runOne(current, next);
+        return;
+      }
+
       setProgress("Planning…");
       const planned = await planAgentJob(current);
-      const kept = current.shots.filter((shot) => shot.status === "done" || shot.status === "error");
+      const kept = current.shots.filter((shot) => shot.status === "done");
       current = pushMessage(
-        { ...current, lock: planned.lock, shots: [...kept, ...planned.shots] },
+        { ...current, lock: planned.lock, shots: [...kept, ...planned.shots], waitingForApproval: true },
         {
           id: uuid(),
           role: "assistant",
@@ -140,35 +213,8 @@ export default function AgentView() {
         }
       );
       commit(current);
-
-      for (const shot of planned.shots) {
-        setProgress(`Running ${shot.title}…`);
-        current = {
-          ...current,
-          shots: current.shots.map((item) => (item.id === shot.id ? { ...item, status: "running" } : item)),
-        };
-        commit(current);
-        current = await runAgentShot(current, shot.id);
-        const done = current.shots.find((item) => item.id === shot.id);
-        current = pushMessage(current, {
-          id: uuid(),
-          role: "assistant",
-          text: done?.status === "done" ? `Done: ${shot.title}` : `Failed: ${shot.title}`,
-          result: done?.result,
-          createdAt: Date.now(),
-        });
-        commit(current);
-      }
-      const videos = planned.shots.filter((shot) => shot.kind === "video" && current.shots.find((item) => item.id === shot.id)?.result).length;
-      if (videos > 1) {
-        current = pushMessage(current, {
-          id: uuid(),
-          role: "assistant",
-          text: `Attached ${videos} clips in order. Play them one after another for the full video.`,
-          createdAt: Date.now(),
-        });
-        commit(current);
-      }
+      const first = planned.shots[0];
+      if (first) await runOne(current, first);
     } catch (error) {
       commit(
         pushMessage(memoryRef.current, {
@@ -239,7 +285,7 @@ export default function AgentView() {
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Attach photos, tap a model up top, then say what you want.</p>
+            <p>Attach photos, tap a model, then say what you want. I’ll do one piece at a time so you can continue or recreate.</p>
           </div>
         ) : (
           memory.messages.map((message) => (
@@ -284,6 +330,16 @@ export default function AgentView() {
       </div>
 
       <div className="chat-dock">
+        {memory.waitingForApproval && !busy ? (
+          <div className="chat-approve">
+            <button type="button" onClick={() => void onSend("continue")}>
+              Continue
+            </button>
+            <button type="button" onClick={() => void onSend("recreate this")}>
+              Recreate this
+            </button>
+          </div>
+        ) : null}
         {pending.length > 0 ? (
           <div className="chat-pending">
             {pending.map((img) => (

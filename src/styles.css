@@ -586,6 +586,21 @@ code { color: var(--accent-2); }
   color: #fff;
   background: #2a1a24;
 }
+.chat-approve { display: flex; gap: 8px; padding-bottom: 8px; }
+.chat-approve button {
+  flex: 1;
+  border: 1px solid var(--line);
+  background: #111218;
+  color: #fff;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 0.82rem;
+  font-weight: 650;
+}
+.chat-approve button:first-child {
+  background: var(--accent);
+  border-color: var(--accent);
+}
 .chat-pending { display: flex; gap: 8px; padding-bottom: 8px; }
 .chat-pending-thumb { position: relative; width: 48px; height: 48px; }
 .chat-pending-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }

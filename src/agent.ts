@@ -1,7 +1,7 @@
 import { CapacitorHttp } from "@capacitor/core";
 import { completeGrok, generateImage, generateVideo } from "./api";
 import { blobToJpegDataUri, isUsableReferenceImage, uuid } from "./media";
-import { AGENT_IMAGE_TABS, AGENT_VIDEO_TABS, emptyTabState, findImage, findVideo } from "./models";
+import { AGENT_IMAGE_TABS, emptyTabState, findImage, findVideo } from "./models";
 import { isNativeApp, localFileToDataUri } from "./native";
 import type { Aspect, ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
 
@@ -19,6 +19,8 @@ export type AgentLock = {
   atmosphere: string;
 };
 
+export type AgentRefSource = "user" | "created";
+
 export type AgentShot = {
   id: string;
   kind: AgentShotKind;
@@ -28,6 +30,9 @@ export type AgentShot = {
   resolution: VideoResolution;
   model: ImageTabId | VideoTabId;
   status: "pending" | "running" | "done" | "error";
+  refSource: AgentRefSource;
+  useLastFrame: boolean;
+  frameStillIds: string[];
   error?: string;
   result?: StudioResult;
 };
@@ -103,13 +108,27 @@ export type AgentMemory = {
   notes: string;
   lock: AgentLock | null;
   images: LocalImage[];
+  userRefs: LocalImage[];
+  createdStills: LocalImage[];
   shots: AgentShot[];
   lastStill: LocalImage | null;
+  waitingForApproval: boolean;
   messages: AgentMessage[];
 };
 
 export function emptyAgentMemory(): AgentMemory {
-  return { brief: "", notes: "", lock: null, images: [], shots: [], lastStill: null, messages: [] };
+  return {
+    brief: "",
+    notes: "",
+    lock: null,
+    images: [],
+    userRefs: [],
+    createdStills: [],
+    shots: [],
+    lastStill: null,
+    waitingForApproval: false,
+    messages: [],
+  };
 }
 
 export function loadAgentMemory(): AgentMemory {
@@ -117,15 +136,25 @@ export function loadAgentMemory(): AgentMemory {
     const raw = localStorage.getItem(MEMORY_KEY);
     if (!raw) return emptyAgentMemory();
     const parsed = JSON.parse(raw) as AgentMemory;
+    const images = Array.isArray(parsed.images) ? parsed.images : [];
     return {
       brief: parsed.brief || "",
       notes: parsed.notes || "",
       lock: parsed.lock || null,
-      images: Array.isArray(parsed.images) ? parsed.images : [],
+      images,
+      userRefs: Array.isArray(parsed.userRefs) && parsed.userRefs.length ? parsed.userRefs : images,
+      createdStills: Array.isArray(parsed.createdStills) ? parsed.createdStills : [],
       shots: Array.isArray(parsed.shots)
-        ? parsed.shots.map((shot) => ({ ...shot, resolution: shot.resolution || "720p" }))
+        ? parsed.shots.map((shot) => ({
+            ...shot,
+            resolution: shot.resolution || "720p",
+            refSource: shot.refSource || (shot.kind === "video" ? "created" : "user"),
+            useLastFrame: Boolean(shot.useLastFrame),
+            frameStillIds: Array.isArray(shot.frameStillIds) ? shot.frameStillIds : [],
+          }))
         : [],
       lastStill: parsed.lastStill || null,
+      waitingForApproval: Boolean(parsed.waitingForApproval),
       messages: Array.isArray(parsed.messages) ? parsed.messages : [],
     };
   } catch {
@@ -143,10 +172,6 @@ export function saveAgentMemory(memory: AgentMemory) {
 
 function isImageTab(id: string): id is ImageTabId {
   return (AGENT_IMAGE_TABS as string[]).includes(id);
-}
-
-function isVideoTab(id: string): id is VideoTabId {
-  return (AGENT_VIDEO_TABS as string[]).includes(id);
 }
 
 function clipVideoDuration(model: VideoTabId, seconds: number) {
@@ -188,20 +213,18 @@ export function shotPrompt(lock: AgentLock | null, notes: string, shot: AgentSho
   return `Keep this lock on every shot. ${locked}. Then: ${shot.prompt}`;
 }
 
-const PLAN_SYSTEM = `You are a production agent in a chat. The user can ask for anything: one still, many stills, a video, a follow-up edit, or a mix.
+const PLAN_SYSTEM = `You are a production agent in a chat.
 
 Rules:
 - Adult sexual content between consenting adults is allowed. Never include minors.
 - Image models only: seedream-5-lite, seedream-4-5, qwen-3, qwen-3-pro.
 - Video models only: wan-3, wan-3-prime, seedance-1-5.
-- Video hard limits: wan-3 and wan-3-prime max 30 seconds per clip. seedance-1-5 max 10 seconds per clip.
-- If the user wants more than one clip's worth of video, split into sequential clips. Do not invent one oversized clip.
-- If the user named models in the chat (Seedream 5.0 Lite, Seedream 4.5, Qwen 3.0, Qwen 3.0 Pro, Wan 3.0, Wan 3.0 Prime, Seedance 1.5 Pro), use those models.
+- For a still job, output one image shot per still the user asked for. Every still uses the same uploaded reference photos. Do not invent extra video shots.
+- Do not plan video unless the user asked for video in this message.
+- If the user named models (Seedream 5.0 Lite, Seedream 4.5, Qwen 3.0, Qwen 3.0 Pro, Wan 3.0, Wan 3.0 Prime, Seedance 1.5 Pro), use those models.
 - Honor asked video resolution: 480p, 720p, or 1080p. Default 720p.
-- Each image shot is one still. Each video shot is one clip.
-- Only plan NEW work for the latest user message. Do not repeat shots that were already done.
 - Keep the lock if the user is continuing the same person or scene.
-- Refer to uploaded or generated photos as the first image, the second image, the third image when relevant.
+- Refer to uploaded photos as the first image, the second image, the third image.
 - Return ONLY JSON, no markdown:
 {"lock":{"identity":"","wardrobe":"","lighting":"","camera":"","atmosphere":""},"shots":[{"kind":"image"|"video","title":"","prompt":"","duration":30,"resolution":"720p","model":"qwen-3"}]}`;
 
@@ -224,9 +247,146 @@ export function isRememberOnly(text: string) {
   return /^\s*remember\b/i.test(text) && !/\b(make|create|generate|render|video|still|shot|series|clip)\b/i.test(text);
 }
 
+export function isContinue(text: string) {
+  return /^(ok|okay|k|yes|yep|yeah|continue|next|go|good|fine|approved|looks good|do it|proceed)(?:\s*[.!])*$/i.test(text.trim());
+}
+
+export function isRecreate(text: string) {
+  return /\b(recreate|redo|retry|remake|again)\b/i.test(text);
+}
+
+export function isVideoAsk(text: string) {
+  return /\b(video|clip|clips)\b/i.test(text);
+}
+
+export function nextPendingShot(memory: AgentMemory) {
+  return memory.shots.find((shot) => shot.status === "pending") || null;
+}
+
+export function lastActionableShot(memory: AgentMemory) {
+  return [...memory.shots].reverse().find((shot) => shot.status === "done" || shot.status === "error") || null;
+}
+
+export function recreateShot(memory: AgentMemory, text: string) {
+  const numbered = text.match(/\b(?:shot|still|clip|image|part|number|#)?\s*(\d+)\b/i);
+  if (numbered) {
+    const index = Number(numbered[1]) - 1;
+    const shot = memory.shots[index];
+    if (shot) return shot;
+  }
+  return lastActionableShot(memory);
+}
+
+function askedStillCount(text: string) {
+  const match = text.match(/\b(\d+)\s*(?:images?|pictures?|photos?|stills?)\b/i);
+  if (match) return Math.max(1, Math.min(12, Number(match[1])));
+  if (/\b(two|a pair|both)\b/i.test(text)) return 2;
+  return null;
+}
+
+function askedSeconds(text: string) {
+  const seconds = text.match(/(\d+)\s*(?:s|sec|secs|second|seconds)\b/i);
+  if (seconds) return Math.max(1, Number(seconds[1]));
+  const minutes = text.match(/(\d+)\s*(?:m|min|mins|minute|minutes)\b/i);
+  if (minutes) return Math.max(1, Number(minutes[1]) * 60);
+  return 30;
+}
+
+function makeShot(partial: Omit<AgentShot, "id" | "status" | "error" | "result">): AgentShot {
+  return { ...partial, id: uuid(), status: "pending" };
+}
+
+function maxVideoSeconds(model: VideoTabId) {
+  return Math.max(...findVideo(model).durations);
+}
+
+function buildVideoShots(memory: AgentMemory, brief: string): AgentShot[] {
+  const model = (modelFromText(brief, "video") || defaultVideoModel()) as VideoTabId;
+  const total = askedSeconds(brief);
+  const clipLen = clipVideoDuration(model, Math.min(total, maxVideoSeconds(model)));
+  const clipCount = Math.max(1, Math.ceil(total / clipLen));
+  const resolution = clipVideoResolution(model, brief);
+  const stills = memory.createdStills.filter((img) => isUsableReferenceImage(img.dataUri));
+  const maxPer = Math.max(1, findVideo(model).maxImages);
+  const shots: AgentShot[] = [];
+  let offset = 0;
+  for (let index = 0; index < clipCount; index += 1) {
+    const useLastFrame = index > 0;
+    const room = Math.max(1, useLastFrame ? maxPer - 1 : maxPer);
+    const remainingClips = clipCount - index;
+    const remainingStills = Math.max(0, stills.length - offset);
+    const take = Math.min(room, Math.max(useLastFrame ? 0 : 1, Math.ceil(remainingStills / remainingClips) || 0));
+    const slice = stills.slice(offset, offset + take);
+    offset += take;
+    shots.push(
+      makeShot({
+        kind: "video",
+        title: `Video ${index + 1}/${clipCount}`,
+        prompt: `${brief}. Clip ${index + 1} of ${clipCount}, ${clipLen} seconds. ${
+          useLastFrame ? "Continue from the last frame of the previous clip. " : "Start the action. "
+        }Use the attached stills as the look and key moments.`,
+        duration: clipLen,
+        resolution,
+        model,
+        refSource: "created",
+        useLastFrame,
+        frameStillIds: slice.map((img) => img.id),
+      })
+    );
+  }
+  return shots;
+}
+
+export function resetShot(memory: AgentMemory, shotId: string): AgentMemory {
+  const shot = memory.shots.find((item) => item.id === shotId);
+  return {
+    ...memory,
+    createdStills: shot?.kind === "image" ? memory.createdStills.filter((img) => img.name !== `still-${shotId}`) : memory.createdStills,
+    waitingForApproval: false,
+    shots: memory.shots.map((item) =>
+      item.id === shotId ? { ...item, status: "pending", result: undefined, error: undefined } : item
+    ),
+  };
+}
+
+export function approvalText(memory: AgentMemory, shot: AgentShot) {
+  const pending = nextPendingShot(memory);
+  if (shot.status !== "done") {
+    return pending
+      ? `That one failed. Reply recreate this, or continue to skip it.`
+      : `That one failed. Reply recreate this, or tell me what to do next.`;
+  }
+  if (pending) {
+    return `Reply continue for the next one, or recreate this part.`;
+  }
+  const stills = memory.createdStills.length;
+  const videos = memory.shots.filter((item) => item.kind === "video" && item.status === "done").length;
+  if (videos > 1) {
+    return `Those clips are ready. Play them in order for the full video, or recreate one.`;
+  }
+  if (stills) {
+    return `Those ${stills} stills are ready. Ask for a video, or recreate one of them.`;
+  }
+  return `Done. Tell me the next job, or recreate this.`;
+}
+
 export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLock; shots: AgentShot[] }> {
   const brief = latestUserText(memory);
   if (brief.length < 2) throw new Error("Type what you want in the chat.");
+
+  if (isVideoAsk(brief) && memory.createdStills.length && !askedStillCount(brief)) {
+    return {
+      lock: memory.lock || {
+        identity: "Keep the same person from the created stills.",
+        wardrobe: "",
+        lighting: "",
+        camera: "",
+        atmosphere: "",
+      },
+      shots: buildVideoShots(memory, brief),
+    };
+  }
+
   const history = memory.messages
     .slice(-8)
     .map((item) => `${item.role}: ${item.text}`)
@@ -234,7 +394,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
   const user = [
     memory.notes.trim() ? `Remembered facts:\n${memory.notes.trim()}` : "",
     memory.lock ? `Existing lock (update if the new job needs it):\n${JSON.stringify(memory.lock)}` : "",
-    `${memory.images.length} reference photo(s) attached.`,
+    `${memory.userRefs.length || memory.images.length} uploaded reference photo(s). Use those same photos for every still.`,
     history ? `Recent chat:\n${history}` : "",
     `Latest request:\n${brief}`,
   ]
@@ -251,47 +411,80 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     atmosphere: String(parsed.lock?.atmosphere || "").trim(),
   };
 
-  const shots: AgentShot[] = [];
+  let shots: AgentShot[] = [];
   for (const row of parsed.shots || []) {
-    const kind: AgentShotKind = row.kind === "video" ? "video" : "image";
+    if (row.kind === "video") continue;
     const asked = String(row.model || "");
-    const tagged = modelFromText(brief, kind);
-    const model = tagged
-      ? tagged
-      : kind === "image"
-        ? isImageTab(asked) ? asked : defaultImageModel()
-        : isVideoTab(asked) ? asked : defaultVideoModel();
-    const duration = kind === "video" ? clipVideoDuration(model as VideoTabId, Number(row.duration) || 30) : 0;
-    const resolution = kind === "video" ? clipVideoResolution(model as VideoTabId, String(row.resolution || brief)) : "720p";
-    shots.push({
-      id: uuid(),
-      kind,
-      title: String(row.title || `${kind} ${shots.length + 1}`).trim(),
-      prompt: String(row.prompt || brief).trim(),
-      duration,
-      resolution,
-      model,
-      status: "pending",
-    });
+    const tagged = modelFromText(brief, "image");
+    const model = tagged || (isImageTab(asked) ? asked : defaultImageModel());
+    shots.push(
+      makeShot({
+        kind: "image",
+        title: String(row.title || `Still ${shots.length + 1}`).trim(),
+        prompt: String(row.prompt || brief).trim(),
+        duration: 0,
+        resolution: "720p",
+        model,
+        refSource: "user",
+        useLastFrame: false,
+        frameStillIds: [],
+      })
+    );
   }
+
+  const want = askedStillCount(brief);
+  if (want) {
+    if (!shots.length) {
+      const model = modelFromText(brief, "image") || defaultImageModel();
+      shots = Array.from({ length: want }, (_, index) =>
+        makeShot({
+          kind: "image",
+          title: `Still ${index + 1}/${want}`,
+          prompt: brief,
+          duration: 0,
+          resolution: "720p",
+          model,
+          refSource: "user",
+          useLastFrame: false,
+          frameStillIds: [],
+        })
+      );
+    } else if (shots.length < want) {
+      const last = shots[shots.length - 1];
+      while (shots.length < want) {
+        shots.push(
+          makeShot({
+            ...last,
+            title: `Still ${shots.length + 1}/${want}`,
+          })
+        );
+      }
+    } else if (shots.length > want) {
+      shots = shots.slice(0, want);
+    }
+  }
+
   if (!shots.length) throw new Error("Agent returned no shots.");
   return { lock, shots };
 }
 
-function refsForShot(memory: AgentMemory, model: ImageTabId | VideoTabId, kind: AgentShotKind) {
-  const max = kind === "image" ? findImage(model as ImageTabId).maxImages : findVideo(model as VideoTabId).maxImages;
-  const chain: LocalImage[] = [];
-  for (const img of memory.images) {
-    if (isUsableReferenceImage(img.dataUri)) chain.push(img);
+function refsForShot(memory: AgentMemory, shot: AgentShot) {
+  const max = shot.kind === "image" ? findImage(shot.model as ImageTabId).maxImages : findVideo(shot.model as VideoTabId).maxImages;
+  if (shot.kind === "image" || shot.refSource === "user") {
+    const refs = (memory.userRefs.length ? memory.userRefs : memory.images).filter((img) => isUsableReferenceImage(img.dataUri));
+    return refs.slice(0, Math.max(1, max));
   }
-  if (
-    memory.lastStill &&
-    isUsableReferenceImage(memory.lastStill.dataUri) &&
-    !chain.some((img) => img.id === memory.lastStill?.id || img.dataUri === memory.lastStill?.dataUri)
-  ) {
-    chain.push(memory.lastStill);
+  const frames: LocalImage[] = [];
+  if (shot.useLastFrame && memory.lastStill && isUsableReferenceImage(memory.lastStill.dataUri)) {
+    frames.push(memory.lastStill);
   }
-  return chain.slice(0, Math.max(1, max));
+  for (const id of shot.frameStillIds) {
+    const still = memory.createdStills.find((img) => img.id === id);
+    if (still && isUsableReferenceImage(still.dataUri) && !frames.some((img) => img.id === still.id)) {
+      frames.push(still);
+    }
+  }
+  return frames.slice(0, Math.max(1, max));
 }
 
 async function fetchImageBlob(url: string): Promise<Blob | null> {
@@ -385,7 +578,7 @@ export async function runAgentShot(
 ): Promise<AgentMemory> {
   const shot = memory.shots.find((item) => item.id === shotId);
   if (!shot) throw new Error("Shot missing.");
-  const images = refsForShot(memory, shot.model, shot.kind);
+  const images = refsForShot(memory, shot);
   const prompt = shotPrompt(memory.lock, memory.notes, shot);
   const state: TabState = {
     ...emptyTabState(shot.kind),
@@ -405,10 +598,15 @@ export async function runAgentShot(
       ? await generateImage(shot.model as ImageTabId, state, onProgress)
       : await generateVideo(shot.model as VideoTabId, state, onProgress);
 
-  const lastStill = (await resultToStill(result)) || memory.lastStill;
+  const still = await resultToStill(result);
   return {
     ...memory,
-    lastStill,
+    lastStill: shot.kind === "video" ? still || memory.lastStill : memory.lastStill,
+    createdStills:
+      shot.kind === "image" && still
+        ? [...memory.createdStills.filter((img) => img.name !== `still-${shotId}`), { ...still, name: `still-${shotId}` }]
+        : memory.createdStills,
+    waitingForApproval: true,
     shots: memory.shots.map((item) =>
       item.id === shotId ? { ...item, status: "done", result, error: undefined } : item
     ),
@@ -431,9 +629,19 @@ export function describePlan(lock: AgentLock, shots: AgentShot[]) {
     lock.camera && `Camera: ${lock.camera}`,
     lock.atmosphere && `Atmosphere: ${lock.atmosphere}`,
   ].filter(Boolean);
-  const shotLines = shots.map(
-    (shot, index) =>
-      `${index + 1}. ${shot.title} — ${shot.kind === "video" ? `${shot.duration}s ${shot.resolution}` : "still"} · ${chipLabel(shot.model)}`
-  );
-  return [`I'll lock the look and run the shots in order.`, ...lockLines, "", ...shotLines].join("\n");
+  const shotLines = shots.map((shot, index) => {
+    const extra =
+      shot.kind === "video"
+        ? `${shot.duration}s ${shot.resolution}${shot.useLastFrame ? " · last frame + remaining stills" : " · created stills"}`
+        : "still · same uploaded refs";
+    return `${index + 1}. ${shot.title} — ${extra} · ${chipLabel(shot.model)}`;
+  });
+  return [
+    `I'll lock the look and do one shot at a time.`,
+    ...lockLines,
+    "",
+    ...shotLines,
+    "",
+    "Reply continue after each one, or recreate that part.",
+  ].join("\n");
 }
