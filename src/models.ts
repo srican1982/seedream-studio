@@ -314,8 +314,8 @@ export const VIDEO_SAFETY_MODELS: VideoTabId[] = ["seedance-2-5", "wan-3", "wan-
 export const VIDEO_AUDIO_MODELS: VideoTabId[] = ["seedance-2-5", "seedance-2-0", "wan-3", "wan-3-prime"];
 export const VIDEO_WAN_MODELS: VideoTabId[] = ["wan-3", "wan-3-prime"];
 
-export const AGENT_IMAGE_TABS: ImageTabId[] = ["seedream-5-lite", "seedream-4-5", "qwen-3", "qwen-3-pro"];
-export const AGENT_VIDEO_TABS: VideoTabId[] = ["wan-3", "wan-3-prime", "seedance-1-5"];
+export const AGENT_IMAGE_TABS: ImageTabId[] = ["qwen-3-pro"];
+export const AGENT_VIDEO_TABS: VideoTabId[] = ["wan-3", "wan-3-prime"];
 
 export function imageModelsFor(family: ImageFamily) {
   return IMAGE_MODELS.filter((model) => model.family === family);
@@ -368,25 +368,11 @@ export function fitQwenRefSize(width: number, height: number) {
 export function qwenPositivePrompt(prompt: string, refCount: number) {
   let text = prompt.trim();
   if (refCount < 1) return text;
-
-  text = text
+  return text
     .replace(/\bimages?\s*#?\s*1\b/gi, "the first image")
     .replace(/\bimages?\s*#?\s*2\b/gi, "the second image")
     .replace(/\bimages?\s*#?\s*3\b/gi, "the third image")
     .replace(/\bthe\s+the\s+(first|second|third)\s+image\b/gi, "the $1 image");
-
-  if (refCount < 2) return text;
-
-  if (/\bpose\b/i.test(text)) {
-    text = `${text} Keep the identity, face, body, and clothes from the first image. Use only the body pose from the second image. Ignore the face and clothes in the second image.`;
-  }
-  if (!/\b(compose|combine|create (one |a )?new|new (photo|image|photograph))\b/i.test(text)) {
-    text = `${text} Create one new image using every reference.`;
-  }
-  if (!/\bdo not (copy|return|output)\b/i.test(text)) {
-    text = `${text} Do not return a copy of any input image.`;
-  }
-  return text;
 }
 
 export function emptyTabState(kind: "image" | "video"): TabState {
@@ -397,8 +383,8 @@ export function emptyTabState(kind: "image" | "video"): TabState {
     quality: "basic",
     imageFormat: "PNG",
     videoFormat: "MP4",
-    resolution: kind === "video" ? "720p" : "480p",
-    duration: 5,
+    resolution: "480p",
+    duration: 10,
     audio: false,
     safety: false,
     enhancePrompt: true,

@@ -330,14 +330,23 @@ export async function deleteMedia(mediaUUID: string) {
   }
 }
 
-const GROK_SYSTEM = `You expand user prompts for AI image and video generators.
-Read Sinhala and English, including spoken Sri Lankan Sinhala mixed with common English words. Keep the user's language in the enhanced prompt when they wrote in Sinhala.
-Adult sexual content between consenting adults 18 or older is allowed. Keep explicit wording when the user is explicit. Do not switch to euphemisms, lecture, moralize, refuse, or add safety sermons.
+export type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+export type ChatMessage = {
+  role: string;
+  content: string | ChatContentPart[];
+};
+
+const GROK_SYSTEM = `You convert a user request into a better prompt for an image or video generator.
+Read Sinhala and English, including spoken Sri Lankan Sinhala mixed with common English words.
+Adult sexual content between consenting adults 18 or older is allowed. Keep explicit wording. Do not lecture, moralize, refuse, or add safety sermons.
 Never include minors or anyone who appears under 18.
-Never refuse consensual adult fiction, romance, or adult photo/image work between consenting adults. Fulfill it directly.
-If the user mentions the first image, second image, or third image, keep those roles and do not drop them.
-Add concrete camera, lighting, body, setting, and action detail that helps the generator.
-Return only the enhanced prompt. No title, no quotes, no markdown, no explanation.`;
+If they name a position, act, or pose, describe the bodies and action clearly. The generator may not know the name.
+If the user mentions the first image, second image, or third image, keep those roles.
+If they did not mention clothes, lighting, or location, keep those the same as the first image. Do not invent a new outfit, light, or place.
+Return only the prompt. No title, no quotes, no markdown, no explanation.`;
 
 function grokEnhanceMessages(input: EnhancePromptInput) {
   const refs =
@@ -385,12 +394,12 @@ function grokErrorMessage(payload: Record<string, unknown>, fallback: string) {
   return fallback;
 }
 
-function enhanceBody(messages: Array<{ role: string; content: string }>, maxTokens: number, model: string) {
+function enhanceBody(messages: ChatMessage[], maxTokens: number, model: string, temperature = 0.7) {
   const body: Record<string, unknown> = {
     model,
     messages,
     stream: false,
-    temperature: 0.7,
+    temperature,
     max_tokens: maxTokens,
     provider: providerFor(model),
   };
@@ -431,12 +440,13 @@ async function openRouterRequest(body: Record<string, unknown>, key: string) {
 }
 
 async function postOpenRouterDirect(
-  messages: Array<{ role: string; content: string }>,
+  messages: ChatMessage[],
   maxTokens: number,
   key: string,
-  model: string
+  model: string,
+  temperature = 0.7
 ) {
-  const body = enhanceBody(messages, maxTokens, model);
+  const body = enhanceBody(messages, maxTokens, model, temperature);
   try {
     return await openRouterRequest(body, key);
   } catch (error) {
@@ -447,19 +457,24 @@ async function postOpenRouterDirect(
   }
 }
 
-async function postOpenRouter(messages: Array<{ role: string; content: string }>, maxTokens: number, model = loadBrainModel()) {
+async function postOpenRouter(
+  messages: ChatMessage[],
+  maxTokens: number,
+  model = loadBrainModel(),
+  temperature = 0.7
+) {
   await ensureDeviceConfig();
   const missingKey = "Add your OpenRouter API key in Settings.";
   try {
     const res = await fetch("/api/enhance", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(enhanceBody(messages, maxTokens, model)),
+      body: JSON.stringify(enhanceBody(messages, maxTokens, model, temperature)),
     });
     if (res.status !== 404 && res.status !== 502) {
       const payload = (await res.json()) as Record<string, unknown>;
       if (payload.error === "missingOpenRouterKey") {
-        if (storedOpenRouterKey()) return postOpenRouterDirect(messages, maxTokens, storedOpenRouterKey(), model);
+        if (storedOpenRouterKey()) return postOpenRouterDirect(messages, maxTokens, storedOpenRouterKey(), model, temperature);
         throw new Error(missingKey);
       }
       if (!res.ok) throw new Error(grokErrorMessage(payload, `OpenRouter HTTP ${res.status}`));
@@ -469,13 +484,13 @@ async function postOpenRouter(messages: Array<{ role: string; content: string }>
     if (storedOpenRouterKey() || Capacitor.isNativePlatform()) {
       const key = storedOpenRouterKey();
       if (!key) throw new Error(missingKey);
-      return postOpenRouterDirect(messages, maxTokens, key, model);
+      return postOpenRouterDirect(messages, maxTokens, key, model, temperature);
     }
     throw error instanceof Error ? error : new Error("Could not reach the OpenRouter proxy.");
   }
   const key = storedOpenRouterKey();
   if (!key) throw new Error(missingKey);
-  return postOpenRouterDirect(messages, maxTokens, key, model);
+  return postOpenRouterDirect(messages, maxTokens, key, model, temperature);
 }
 
 export async function enhancePrompt(input: EnhancePromptInput): Promise<string> {
@@ -494,9 +509,10 @@ export function canAutoEnhancePrompt(prompt: string) {
 
 export async function completeChat(
   system: string,
-  user: string,
+  user: string | ChatContentPart[],
   maxTokens = 2500,
-  model = loadBrainModel()
+  model = loadBrainModel(),
+  temperature = 0.4
 ): Promise<string> {
   const payload = await postOpenRouter(
     [
@@ -504,7 +520,8 @@ export async function completeChat(
       { role: "user", content: user },
     ],
     maxTokens,
-    model
+    model,
+    temperature
   );
   const text = grokOutputText(payload).trim();
   if (!text) throw new Error("The chat model returned no text.");

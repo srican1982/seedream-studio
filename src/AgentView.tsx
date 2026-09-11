@@ -333,7 +333,7 @@ export default function AgentView() {
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Ask anything in Sinhala or English. Attach photos, tap a model, or use Stills → video as a starting prompt. I’ll do one piece at a time so you can continue or recreate.</p>
+            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime at 480p unless you pick Wan 3.0. I’ll do one piece at a time so you can continue or recreate.</p>
           </div>
         ) : (
           memory.messages.map((message) => (
