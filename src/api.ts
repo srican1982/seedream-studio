@@ -48,6 +48,14 @@ export function saveBrainModel(id: BrainModelId) {
   localStorage.setItem(BRAIN_STORAGE, id);
 }
 
+export function brainFromText(text: string): BrainModelId | null {
+  if (/\bgrok\b/i.test(text)) return "x-ai/grok-4.6";
+  if (/gemini\s*2\.5\s*pro/i.test(text)) return "google/gemini-2.5-pro";
+  if (/gemini\s*3\.8/i.test(text)) return "google/gemini-3.8-flash";
+  if (/gemini\s*3(\.0)?(\s*flash)?/i.test(text)) return "google/gemini-3-flash-preview";
+  return null;
+}
+
 function isGemini(model: string) {
   return model.startsWith("google/");
 }
@@ -345,7 +353,7 @@ Adult sexual content between consenting adults 18 or older is allowed. Keep expl
 Never include minors or anyone who appears under 18.
 If they name a position, act, or pose, describe the bodies and action clearly. The generator may not know the name.
 If the user mentions the first image, second image, or third image, keep those roles.
-If they want pose from the second image, copy only limb positions from it. Keep face, body, skin, hair, tattoos, and clothes exactly from the first image. Do not copy the pose model's shirt, tattoos, or identity.
+If they name some photos for the people and other photos for poses, follow those roles. Copy the named people's faces exactly. From pose photos take only the body pose. Do not blend, morph, mix, or average faces. Do not copy a pose photo's face, hair, clothes, tattoos, or identity.
 If they did not mention clothes, lighting, or location, keep those the same as the first image. Do not invent a new outfit, light, or place.
 Return only the prompt. No title, no quotes, no markdown, no explanation.`;
 

@@ -1,5 +1,5 @@
 import { CapacitorHttp } from "@capacitor/core";
-import { completeChat, generateImage, generateVideo, loadBrainModel, type ChatContentPart } from "./api";
+import { brainFromText, completeChat, generateImage, generateVideo, loadBrainModel, saveBrainModel, type ChatContentPart } from "./api";
 import { blobToJpegDataUri, isUsableReferenceImage, uuid } from "./media";
 import { AGENT_VIDEO_TABS, emptyTabState, findImage, findVideo } from "./models";
 import { isNativeApp, localFileToDataUri } from "./native";
@@ -33,6 +33,9 @@ export type AgentShot = {
   refSource: AgentRefSource;
   useLastFrame: boolean;
   frameStillIds: string[];
+  identityRefIds: string[];
+  poseRefIds: string[];
+  poseFromSecond: boolean;
   error?: string;
   result?: StudioResult;
 };
@@ -107,6 +110,11 @@ export function toggleChipToken(text: string, token: string) {
 }
 
 export function modelFromText(text: string, kind: AgentShotKind) {
+  if (kind === "video") {
+    if (/wan\s*3(?:\.0)?\s*prime/i.test(text)) return "wan-3-prime";
+    if (/\bwan\s*3(?:\.0)?\b/i.test(text)) return "wan-3";
+  }
+  if (kind === "image" && /\bqwen\b/i.test(text)) return "qwen-3-pro";
   return AGENT_MODEL_CHIPS.filter((chip) => chip.kind === kind)
     .sort((a, b) => b.token.length - a.token.length)
     .find((chip) => chipInText(text, chip.token))?.id;
@@ -170,6 +178,9 @@ export function loadAgentMemory(): AgentMemory {
             refSource: shot.refSource || (shot.kind === "video" ? "created" : "user"),
             useLastFrame: Boolean(shot.useLastFrame),
             frameStillIds: Array.isArray(shot.frameStillIds) ? shot.frameStillIds : [],
+            identityRefIds: Array.isArray(shot.identityRefIds) ? shot.identityRefIds : [],
+            poseRefIds: Array.isArray(shot.poseRefIds) ? shot.poseRefIds : [],
+            poseFromSecond: Boolean(shot.poseFromSecond),
           }))
         : [],
       lastStill: parsed.lastStill || null,
@@ -214,9 +225,28 @@ function defaultVideoModel(): VideoTabId {
 }
 
 export function shotPrompt(_lock: AgentLock | null, notes: string, shot: AgentShot) {
+  let prompt = shot.poseFromSecond ? applyPoseIdentityLock(shot.prompt, shot.identityRefIds.length) : shot.prompt;
   const remembered = notes.trim();
-  if (!remembered) return shot.prompt;
-  return `${shot.prompt}\nRemembered from the user: ${remembered}`;
+  if (!remembered) return prompt;
+  return `${prompt}\nRemembered from the user: ${remembered}`;
+}
+
+function poseIdentityLock(identityCount: number) {
+  const people =
+    identityCount >= 2
+      ? `The first ${identityCount} images are the people the user named for identity. Copy those same people exactly: same faces, same body, same skin, same hair, same tattoos or no tattoos, same clothes.`
+      : "The first image is the people the user named for identity. Copy those people exactly: same faces, same facial structure, same eyes, nose, mouth, same skin, same hair, same body, same tattoos or no tattoos, same clothes.";
+  const pose =
+    identityCount >= 2
+      ? "The last image is the pose photo they named. Match that body pose: limbs, torso, hips, facing, sit/stand/lie, contact."
+      : "The second image is the pose photo they named. Look at how that body is posed and match it: limbs, torso, hips, facing, sit/stand/lie, contact.";
+  return `${people} ${pose} STRICT IDENTITY: do not copy, blend, morph, mix, or average any face, hair, clothes, jewelry, tattoos, or body type from the pose photo. The person in the pose photo must not appear.`;
+}
+
+function applyPoseIdentityLock(prompt: string, identityCount = 1) {
+  const text = prompt.trim();
+  if (/STRICT IDENTITY/i.test(text)) return text;
+  return `${text}\n\n${poseIdentityLock(identityCount)}`;
 }
 
 const PLAN_SYSTEM = `You are the same Gemini the user would talk to in a normal chat. Read their words and look at the attached photos. Understand the request the way you would if they messaged you directly.
@@ -239,13 +269,17 @@ How to write shot.prompt:
 - Keep every concrete detail they said. Keep their adult wording. Be direct and sexual when they are.
 - Clothing, lighting, and location: if they named a change, follow that. If they did not, tell Qwen or Wan to keep the same clothes, same lighting, and same place as the first image (or the photo they pointed at). Do not invent a new room, new light, or new outfit.
 - Describing the act or position they asked for is not inventing. Changing the photo's clothes, light, or place without them asking is inventing.
-- If they pointed at attached photos, call them the first image, the second image, the third image, in that order, and say what to keep from each.
+- If they pointed at photos, use the bar numbers they said, and keep those roles.
 - If they already picked photos in tap order, those are the ONLY references. refs must be attached. First tapped is the first image, second tapped is the second image. Do not add other stills.
-- If they want the person from the first image in the pose of the second image:
-  - The result person must be exactly the first-image person: same face, same body, same skin, same hair, same tattoos or no tattoos, same clothes.
-  - From the second image take ONLY the body pose: limb positions, torso angle, how they sit/stand/lie, contact points. Describe that pose in words (arms, legs, hips, facing) without describing the second person's clothes, tattoos, face, hair, or identity.
-  - Do not copy a white shirt, tattoos, jewelry, hair, or body type from the pose reference. Those belong to the pose model, not the main person.
-  - Keep lighting and location from the first image unless the user named a change.
+- If they name some photos for the people and other photos for poses, follow what they said. Do not assume photo 1 is people or photo 2 is pose unless they said that.
+  - identity = the bar numbers they named for the people. pose = the bar number they named for that still's pose.
+  - One still per pose they asked for.
+  - Qwen can take 3 reference images. Each still uses the identity photos plus THAT pose photo only. Do not put two pose photos in the same still.
+  - The result people must be exactly the identity-photo people: same faces, body, skin, hair, tattoos or no tattoos, clothes.
+  - Never blend, morph, mix, or average faces. The pose-photo person must not appear.
+  - From the pose photo take ONLY the body pose. Write that pose clearly. Do not describe the pose person's face, hair, clothes, tattoos, jewelry, or identity.
+  - Keep lighting and location from the identity photos unless the user named a change.
+  - Fill identity and pose with the numbers they named.
 - One shot per still they asked for. Each shot.prompt is that still's full instruction.
 - Never add a video shot unless THIS message asks for a video or clip.
 - There are two photo sets unless they already picked photos in tap order:
@@ -264,7 +298,7 @@ reply must be one short sentence or "". Never put JSON, markdown, or the generat
 Always return one complete JSON object. Do not cut off mid-string.
 
 Return ONLY JSON, no markdown:
-{"reply":"","refs":"attached"|"created"|"both","shots":[{"kind":"image"|"video","title":"","prompt":"","duration":10}]}`;
+{"reply":"","refs":"attached"|"created"|"both","shots":[{"kind":"image"|"video","title":"","prompt":"","duration":10,"identity":[],"pose":0}]}`;
 
 function parsePlanJson(text: string) {
   const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
@@ -421,6 +455,66 @@ export function askedForVideo(text: string) {
   return /\b(video|videos|clip|clips|animate|animation|movie|film|වීඩියෝ|වීඩියෝව|ක්ලිප්)\b/i.test(text);
 }
 
+export function askedForPeopleAndPose(text: string) {
+  return /\b(people|person|identity|faces?|අය)\b/i.test(text) && /\b(pose|poses|posture|ඉරියව්)\b/i.test(text);
+}
+
+const PHOTO_TOKEN = /\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|one|1st|2nd|3rd|4th|5th|6th|7th|8th|9th|10th|10|[1-9])\b/gi;
+const PHOTO_TOKEN_MAP: Record<string, number> = {
+  first: 1,
+  one: 1,
+  "1st": 1,
+  second: 2,
+  "2nd": 2,
+  third: 3,
+  "3rd": 3,
+  fourth: 4,
+  "4th": 4,
+  fifth: 5,
+  "5th": 5,
+  sixth: 6,
+  "6th": 6,
+  seventh: 7,
+  "7th": 7,
+  eighth: 8,
+  "8th": 8,
+  ninth: 9,
+  "9th": 9,
+  tenth: 10,
+  "10th": 10,
+};
+
+function photoTokenToNum(raw: string) {
+  const key = raw.toLowerCase();
+  if (PHOTO_TOKEN_MAP[key]) return PHOTO_TOKEN_MAP[key];
+  const n = Number(key);
+  return n >= 1 && n <= 10 ? n : 0;
+}
+
+function numbersIn(text: string, max: number) {
+  const out: number[] = [];
+  for (const match of text.matchAll(PHOTO_TOKEN)) {
+    const n = photoTokenToNum(match[1]);
+    if (n >= 1 && n <= max && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+function clauses(text: string, trigger: RegExp) {
+  return [...text.matchAll(trigger)].map((match) => match[1]).join(" ");
+}
+
+export function parseIdentityPoseJob(text: string, photoCount: number): { identity: number[]; poses: number[] } | null {
+  if (photoCount < 1) return null;
+  const cleaned = text.replace(/\b(?:create|make|generate|හදන්න)\s+\d+\s+(?:photo|image|still|picture)s?\b/gi, " ");
+  const poseBits = clauses(cleaned, /(.{0,64}(?:pose|poses|posture|ඉරියව්).{0,64})/gi);
+  const peopleBits = clauses(cleaned, /(.{0,64}(?:people|person|identity|faces?|අය).{0,64})/gi);
+  const poses = numbersIn(poseBits, photoCount);
+  const identity = numbersIn(peopleBits, photoCount).filter((n) => !poses.includes(n));
+  if (!identity.length || !poses.length) return null;
+  return { identity, poses };
+}
+
 export function videoRefQuestion() {
   return "Which photos should go in the video? Tap them in order on the bar above. First tap is the first image, second tap is the second image. If you tap a wrong one, remove it from the row below. Then tap Use these. You can pick up to 10.\n\nවීඩියෝවට මොන පොටෝද? උඩ තීරුවේ ඕන පිළිවෙලට tap කරන්න. පළවෙනි tap එක පළවෙනි image එක. වැරදි එකක් නම් යටින් × තියලා අයින් කරන්න. ඊට පස්සේ Use these.";
 }
@@ -441,6 +535,20 @@ async function toGeminiJpegBase64(source: string): Promise<string | null> {
     /* try next */
   }
   return null;
+}
+
+async function plannerLibrary(library: LibraryPhoto[]): Promise<ChatContentPart[]> {
+  const parts: ChatContentPart[] = [];
+  for (const photo of library.slice(0, 10)) {
+    const url = await toGeminiJpegBase64(photo.image.dataUri || photo.image.preview);
+    if (!url) continue;
+    parts.push({
+      type: "text",
+      text: `This is photo ${photo.label} on the bar (${photo.kind === "made" ? "created in this chat" : "uploaded"}). Look at it carefully.`,
+    });
+    parts.push({ type: "image_url", image_url: { url } });
+  }
+  return parts;
 }
 
 async function plannerImages(images: LocalImage[], max = 6, label = "uploaded"): Promise<ChatContentPart[]> {
@@ -488,6 +596,49 @@ export function photoLibrary(memory: AgentMemory, extra: LocalImage[] = []): Lib
   return out;
 }
 
+export function removeLibraryPhoto(memory: AgentMemory, id: string): AgentMemory {
+  const drop = (imgs: LocalImage[] | undefined) => (imgs || []).filter((img) => img.id !== id);
+  return {
+    ...memory,
+    images: drop(memory.images),
+    userRefs: drop(memory.userRefs),
+    createdStills: drop(memory.createdStills),
+    chosenRefs: drop(memory.chosenRefs),
+    lastStill: memory.lastStill?.id === id ? null : memory.lastStill,
+    messages: memory.messages.map((msg) => ({ ...msg, images: drop(msg.images) })),
+  };
+}
+
+function numsFromUnknown(value: unknown, max: number) {
+  const raw = Array.isArray(value) ? value : value == null || value === "" ? [] : [value];
+  const out: number[] = [];
+  for (const item of raw) {
+    const n = Number(item);
+    if (n >= 1 && n <= max && !out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
+function libraryIds(library: LibraryPhoto[], nums: number[]) {
+  return nums.map((n) => library[n - 1]?.id).filter((id): id is string => Boolean(id));
+}
+
+function imagesFromIds(memory: AgentMemory, ids: string[]) {
+  const pool = [
+    ...photoLibrary(memory).map((photo) => photo.image),
+    ...memory.chosenRefs,
+    ...memory.userRefs,
+    ...memory.images,
+    ...memory.createdStills,
+  ];
+  const out: LocalImage[] = [];
+  for (const id of ids) {
+    const img = pool.find((item) => item.id === id);
+    if (img && isUsableReferenceImage(img.dataUri) && !out.some((item) => item.id === img.id)) out.push(img);
+  }
+  return out;
+}
+
 function latestUserPhotos(memory: AgentMemory) {
   return [...memory.messages].reverse().find((item) => item.role === "user")?.images || [];
 }
@@ -516,6 +667,8 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
   if (brief.length < 2) throw new Error("Type what you want in the chat.");
 
   const picked = memory.hasPickedVideoRefs;
+  const library = photoLibrary(memory);
+  const split = parseIdentityPoseJob(brief, library.length);
   const freshUploads = picked ? memory.chosenRefs : latestUserPhotos(memory);
   const userRefs = picked
     ? memory.chosenRefs
@@ -528,25 +681,25 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     .slice(-8)
     .map((item) => `${item.role}: ${item.text}`)
     .join("\n");
-  const uploadedParts = await plannerImages(userRefs, 10, picked ? "selected in tap order" : "uploaded");
-  const createdParts = picked ? [] : memory.createdStills.length ? await plannerImages(memory.createdStills, 6, "created earlier in this chat") : [];
-  if (userRefs.length && !uploadedParts.some((part) => part.type === "image_url")) {
+  const uploadedParts = picked
+    ? await plannerImages(userRefs, 10, "selected in tap order")
+    : await plannerLibrary(library);
+  const createdParts = picked || library.length ? [] : memory.createdStills.length ? await plannerImages(memory.createdStills, 6, "created earlier in this chat") : [];
+  if ((picked ? userRefs : library).length && !uploadedParts.some((part) => part.type === "image_url")) {
     throw new Error("Could not encode the photos as JPEG Base64 for Gemini. Attach them again.");
   }
   const text = [
     picked
       ? `The user picked ${memory.chosenRefs.length} photo(s) in tap order. These are the ONLY references. First tapped is the first image, second tapped is the second image, and so on. Do not add other stills.`
-      : freshUploads.length
-        ? `${freshUploads.length} photo(s) just attached WITH this request. Labeled as just uploaded.`
-        : userRefs.length
-          ? `${userRefs.length} earlier uploaded photo(s) are attached.`
-          : "No uploaded photos on this message.",
-    picked
-      ? ""
-      : memory.createdStills.length
-        ? `${memory.createdStills.length} still(s) this chat already created are also attached, labeled created earlier. Use them only if the user asked for those, or for both.`
-        : "No stills created yet in this chat.",
+      : library.length
+        ? `Photos on the bar, numbered as the user sees them: ${library.map((photo) => `${photo.label}=${photo.kind}`).join(", ")}.`
+        : "No photos on the bar.",
     picked ? "" : "Pick refs from the user's words: attached, created, or both. Do not ignore new uploads unless they asked to use the created stills.",
+    split
+      ? `CRITICAL: the user named identity photos ${split.identity.join(", ")} and pose photos ${split.poses.join(", ")}. Follow those bar numbers. One still per pose photo. Each still's refs = identity photos + that pose photo only. Describe each pose in words. Do not describe the pose person's face. Do not blend faces.`
+      : askedForPeopleAndPose(brief)
+        ? "CRITICAL: they named some photos for the people and others for poses. Read the bar numbers they said. Do not assume photo 1 is people or photo 2 is pose. One still per pose they named. Identity photos + that pose photo only. Do not blend faces."
+        : "",
     memory.notes.trim() ? `Remembered facts from the user (do not add extra):\n${memory.notes.trim()}` : "",
     history ? `Recent chat:\n${history}` : "",
     `Latest request:\n${brief}`,
@@ -554,15 +707,18 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     .filter(Boolean)
     .join("\n\n");
 
+  const askedBrain = brainFromText(brief);
+  if (askedBrain) saveBrainModel(askedBrain);
+  const brain = askedBrain || loadBrainModel();
   const content: ChatContentPart[] = [{ type: "text", text }, ...uploadedParts, ...createdParts];
-  let raw = await completeChat(PLAN_SYSTEM, content, 4096, loadBrainModel(), 0.55);
+  let raw = await completeChat(PLAN_SYSTEM, content, 4096, brain, 0.55);
   let parsed = parsePlanJson(raw);
   if (!(parsed.shots || []).length && askedToGenerate(brief)) {
     raw = await completeChat(
       `${PLAN_SYSTEM}\nYour last answer was incomplete. Return ONLY complete JSON with shots filled. reply must be short.`,
       content,
       4096,
-      loadBrainModel(),
+      brain,
       0.2
     );
     parsed = parsePlanJson(raw);
@@ -575,8 +731,10 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     atmosphere: "",
   };
   const refSource = memory.hasPickedVideoRefs ? "user" : pickRefSource(parsed, memory, brief, freshUploads);
+  const emptyIds: string[] = [];
 
   const shots: AgentShot[] = [];
+  let poseShotIndex = 0;
   for (const row of parsed.shots || []) {
     if (row.kind === "video" && !askedForVideo(brief)) continue;
     const kind: AgentShotKind = row.kind === "video" ? "video" : "image";
@@ -595,19 +753,58 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
       : rowRefs
         ? pickRefSource({ refs: rowRefs }, memory, brief, freshUploads)
         : refSource;
+    const identityNums = kind === "image" ? numsFromUnknown(row.identity, library.length) : [];
+    const poseNums = kind === "image" ? numsFromUnknown(row.pose, library.length) : [];
+    const identity = identityNums.length ? identityNums : split?.identity || [];
+    const pose = poseNums.length
+      ? poseNums.slice(0, 1)
+      : split?.poses[poseShotIndex]
+        ? [split.poses[poseShotIndex]]
+        : [];
+    const poseJob = kind === "image" && (identity.length > 0 && pose.length > 0);
+    if (kind === "image" && poseJob) poseShotIndex += 1;
+    const identityRefIds = poseJob ? libraryIds(library, identity) : emptyIds;
+    const poseRefIds = poseJob ? libraryIds(library, pose) : emptyIds;
     const base = {
       kind,
       title: String(row.title || `${kind} ${shots.length + 1}`).trim(),
-      prompt: String(row.prompt || brief).trim() || brief,
+      prompt: poseJob ? applyPoseIdentityLock(String(row.prompt || brief).trim() || brief, identity.length) : String(row.prompt || brief).trim() || brief,
       duration: kind === "video" ? clipVideoDuration(model as VideoTabId, wanted) : 0,
       resolution,
       model,
-      refSource: shotRefs,
+      refSource: poseJob ? "user" as const : shotRefs,
       useLastFrame: false,
       frameStillIds: [] as string[],
+      identityRefIds,
+      poseRefIds,
+      poseFromSecond: poseJob,
     };
     if (kind === "video") shots.push(...expandLongVideo(base, wanted));
     else shots.push(makeShot(base));
+  }
+
+  if (split?.poses.length) {
+    const imageShots = shots.filter((shot) => shot.kind === "image");
+    if (imageShots.length < split.poses.length) {
+      const template = imageShots[0];
+      const extras = split.poses.slice(imageShots.length).map((poseNum, index) =>
+        makeShot({
+          kind: "image",
+          title: `Still ${imageShots.length + index + 1} · pose ${poseNum}`,
+          prompt: applyPoseIdentityLock(template?.prompt || brief, split.identity.length),
+          duration: 0,
+          resolution: "480p",
+          model: defaultImageModel(),
+          refSource: "user",
+          useLastFrame: false,
+          frameStillIds: [],
+          identityRefIds: libraryIds(library, split.identity),
+          poseRefIds: libraryIds(library, [poseNum]),
+          poseFromSecond: true,
+        })
+      );
+      shots.push(...extras);
+    }
   }
 
   if (!shots.length && askedToGenerate(brief)) {
@@ -615,19 +812,30 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     const model = kind === "image" ? defaultImageModel() : defaultVideoModel();
     const wanted = kind === "video" ? askedSeconds(brief) || 10 : 0;
     const duration = kind === "video" ? clipVideoDuration(model as VideoTabId, wanted) : 0;
-    const base = {
-      kind,
-      title: kind === "video" ? "Video" : "Still",
-      prompt: brief,
-      duration,
-      resolution: "480p" as const,
-      model,
-      refSource,
-      useLastFrame: false,
-      frameStillIds: [] as string[],
-    };
-    if (kind === "video") shots.push(...expandLongVideo(base, wanted));
-    else shots.push(makeShot(base));
+    const poseJob = kind === "image" && Boolean(split?.poses.length);
+    const poses = split?.poses || [];
+    const identity = split?.identity || [];
+    for (const poseNum of poses.length ? poses : [0]) {
+      const base = {
+        kind,
+        title: kind === "video" ? "Video" : poses.length > 1 ? `Still · pose ${poseNum}` : "Still",
+        prompt: poseJob ? applyPoseIdentityLock(brief, identity.length) : brief,
+        duration,
+        resolution: "480p" as const,
+        model,
+        refSource: poseJob ? "user" as const : refSource,
+        useLastFrame: false,
+        frameStillIds: [] as string[],
+        identityRefIds: poseJob ? libraryIds(library, identity) : emptyIds,
+        poseRefIds: poseJob && poseNum ? libraryIds(library, [poseNum]) : emptyIds,
+        poseFromSecond: poseJob,
+      };
+      if (kind === "video") {
+        shots.push(...expandLongVideo(base, wanted));
+        break;
+      }
+      shots.push(makeShot(base));
+    }
   }
 
   const reply = cleanReply(String(parsed.reply || ""));
@@ -643,6 +851,16 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
 
 function refsForShot(memory: AgentMemory, shot: AgentShot) {
   const max = shot.kind === "image" ? findImage(shot.model as ImageTabId).maxImages : findVideo(shot.model as VideoTabId).maxImages;
+  if (shot.kind === "image" && (shot.identityRefIds.length || shot.poseRefIds.length)) {
+    const poseImgs = imagesFromIds(memory, shot.poseRefIds);
+    const room = Math.max(1, max - poseImgs.length);
+    const identityImgs = imagesFromIds(memory, shot.identityRefIds).slice(0, room);
+    const combined = [...identityImgs];
+    for (const img of poseImgs) {
+      if (!combined.some((item) => item.id === img.id)) combined.push(img);
+    }
+    return combined.slice(0, Math.max(1, max));
+  }
   if (memory.hasPickedVideoRefs) {
     return memory.chosenRefs.filter((img) => isUsableReferenceImage(img.dataUri)).slice(0, Math.max(1, max));
   }

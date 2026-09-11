@@ -361,11 +361,19 @@ export function fitQwenRefSize(width: number, height: number) {
 export function qwenPositivePrompt(prompt: string, refCount: number) {
   let text = prompt.trim();
   if (refCount < 1) return text;
-  return text
+  text = text
     .replace(/\bimages?\s*#?\s*1\b/gi, "the first image")
     .replace(/\bimages?\s*#?\s*2\b/gi, "the second image")
     .replace(/\bimages?\s*#?\s*3\b/gi, "the third image")
     .replace(/\bthe\s+the\s+(first|second|third)\s+image\b/gi, "the $1 image");
+  if (refCount >= 2 && /STRICT IDENTITY|pose photo|pose only/i.test(text)) {
+    if (refCount === 2) {
+      text = `The first image is the people named for identity. Copy them exactly. The second image is the pose they named. Match that body pose. Do not copy the pose photo's face, hair, clothes, or identity.\n${text}`;
+    } else {
+      text = `The first ${refCount - 1} images are the people named for identity. Copy them exactly. The last image is the pose they named. Match that body pose. Do not copy the pose photo's face, hair, clothes, or identity.\n${text}`;
+    }
+  }
+  return text;
 }
 
 export function emptyTabState(kind: "image" | "video"): TabState {

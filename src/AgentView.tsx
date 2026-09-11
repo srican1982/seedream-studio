@@ -1,11 +1,8 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import {
-  AGENT_JOB_PRESETS,
-  AGENT_MODEL_CHIPS,
   VIDEO_REF_LIMIT,
   askedForVideo,
   approvalText,
-  chipInText,
   describePlan,
   emptyAgentMemory,
   isContinue,
@@ -17,18 +14,18 @@ import {
   photoLibrary,
   planAgentJob,
   recreateShot,
+  removeLibraryPhoto,
   resetShot,
   resultToStill,
   runAgentShot,
   saveAgentMemory,
-  toggleChipToken,
   videoRefQuestion,
   type AgentMemory,
   type AgentMessage,
   type AgentShot,
   type LibraryPhoto,
 } from "./agent";
-import { BRAIN_MODELS, downloadResult, loadBrainModel, saveBrainModel, type BrainModelId } from "./api";
+import { downloadResult } from "./api";
 import { fileToDataUri, uuid } from "./media";
 import { isNativeApp, pickGalleryImages } from "./native";
 import type { LocalImage, StudioResult } from "./types";
@@ -36,7 +33,6 @@ import type { LocalImage, StudioResult } from "./types";
 export default function AgentView() {
   const [memory, setMemory] = useState<AgentMemory>(emptyAgentMemory);
   const [draft, setDraft] = useState("");
-  const [brain, setBrain] = useState<BrainModelId>(loadBrainModel);
   const [pending, setPending] = useState<LocalImage[]>([]);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
@@ -84,21 +80,6 @@ export default function AgentView() {
       return;
     }
     fileRef.current?.click();
-  }
-
-  function addChip(token: string) {
-    setDraft((prev) => toggleChipToken(prev, token));
-    inputRef.current?.focus();
-  }
-
-  function addPreset(text: string) {
-    setDraft((prev) => (prev.trim() ? `${prev.trim()}\n${text}` : text));
-    inputRef.current?.focus();
-  }
-
-  function pickBrain(id: BrainModelId) {
-    saveBrainModel(id);
-    setBrain(id);
   }
 
   async function useResult(result: StudioResult) {
@@ -174,6 +155,11 @@ export default function AgentView() {
     const current = memoryRef.current;
     if (!current.awaitingVideoRefs || busy) return;
     commit({ ...current, chosenRefs: current.chosenRefs.filter((img) => img.id !== id) });
+  }
+
+  function deleteLibraryPhoto(id: string) {
+    setPending((prev) => prev.filter((img) => img.id !== id));
+    commit(removeLibraryPhoto(memoryRef.current, id));
   }
 
   async function planAndRun(current: AgentMemory) {
@@ -401,30 +387,51 @@ export default function AgentView() {
         }}
       />
 
+      <div className="chat-toolbar">
+        <span>
+          {picking ? `Tap photos in order · ${memory.chosenRefs.length}/${VIDEO_REF_LIMIT}` : library.length ? "Photos" : ""}
+        </span>
+        <button
+          className="link"
+          type="button"
+          onClick={() => {
+            commit(emptyAgentMemory());
+            setDraft("");
+            setPending([]);
+          }}
+        >
+          New chat
+        </button>
+      </div>
+
       {library.length || picking ? (
         <div className={`photo-tray${picking ? " picking" : ""}`}>
-          <div className="chat-models-head">
-            <span>{picking ? "Tap photos in order" : "Photos"}</span>
-            {picking ? <span>{memory.chosenRefs.length}/{VIDEO_REF_LIMIT}</span> : null}
-          </div>
           {library.length ? (
             <div className="photo-bar" role="list">
               {library.map((photo) => {
                 const order = memory.chosenRefs.findIndex((img) => img.id === photo.id);
                 return (
-                  <button
-                    key={photo.id}
-                    type="button"
-                    className={`photo-bar-item${order >= 0 ? " on" : ""}`}
-                    role="listitem"
-                    disabled={!picking}
-                    onClick={() => tapLibraryPhoto(photo)}
-                  >
-                    <img src={photo.image.preview || photo.image.dataUri} alt="" />
+                  <div key={photo.id} className={`photo-bar-item${order >= 0 ? " on" : ""}`} role="listitem">
+                    <button
+                      type="button"
+                      className="photo-bar-hit"
+                      disabled={!picking}
+                      onClick={() => tapLibraryPhoto(photo)}
+                    >
+                      <img src={photo.image.preview || photo.image.dataUri} alt="" />
+                    </button>
                     <span className="photo-bar-num">{photo.label}</span>
                     <span className="photo-bar-kind">{photo.kind === "made" ? "Made" : "Yours"}</span>
                     {order >= 0 ? <span className="photo-bar-order">{order + 1}</span> : null}
-                  </button>
+                    <button
+                      type="button"
+                      className="photo-bar-del"
+                      aria-label="Delete photo"
+                      onClick={() => deleteLibraryPhoto(photo.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -454,65 +461,11 @@ export default function AgentView() {
         </div>
       ) : null}
 
-      <div className="chat-models">
-        <div className="chat-models-head">
-          <span>Brain</span>
-          <button
-            className="link"
-            type="button"
-            onClick={() => {
-              commit(emptyAgentMemory());
-              setDraft("");
-              setPending([]);
-            }}
-          >
-            New chat
-          </button>
-        </div>
-        <div className="chat-chips top">
-          {BRAIN_MODELS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={brain === item.id ? "on" : ""}
-              onClick={() => pickBrain(item.id)}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-        <div className="chat-models-head">
-          <span>Models</span>
-        </div>
-        <div className="chat-chips">
-          {AGENT_JOB_PRESETS.map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              className={draft.includes(preset.text) ? "on preset" : "preset"}
-              onClick={() => addPreset(preset.text)}
-            >
-              {preset.label}
-            </button>
-          ))}
-          {AGENT_MODEL_CHIPS.map((chip) => (
-            <button
-              key={chip.id}
-              type="button"
-              className={chipInText(draft, chip.token) ? "on" : ""}
-              onClick={() => addChip(chip.token)}
-            >
-              {chip.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
       <div className="chat-thread" ref={threadRef}>
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime at 480p unless you pick Wan 3.0. I’ll do one piece at a time so you can continue or recreate.</p>
+            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime at 480p. Type Wan 3.0, Grok, or Gemini 2.5 Pro if you want a different model. I’ll do one piece at a time so you can continue or recreate.</p>
           </div>
         ) : (
           memory.messages.map((message) => (
