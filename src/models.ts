@@ -338,15 +338,8 @@ export function wanSize(aspect: Aspect, resolution: "480p" | "720p" | "1080p") {
 export function wanPositivePrompt(prompt: string, audio: boolean) {
   const text = prompt.trim();
   if (!audio) return text;
-  const lower = text.toLowerCase();
-  const mentionsMusic = /\b(music|soundtrack|score|song|songs|beat|bpm|melody)\b/.test(lower);
-  const mentionsAudio = /\b(audio|sound|speech|says|said|saying|dialogue|voice|foley|ambience|ambient|spoken)\b/.test(
-    lower
-  );
-  const extras: string[] = [];
-  if (!mentionsMusic) extras.push("Audio: no background music, no soundtrack, no songs.");
-  if (!mentionsAudio) extras.push("Use only natural speech, Foley, and room ambience that match the prompt.");
-  return extras.length ? `${text} ${extras.join(" ")}` : text;
+  if (/\b(audio|sound|speech|says|said|saying|dialogue|voice|foley|ambience|ambient|spoken)\b/i.test(text)) return text;
+  return `${text} Include audible speech, room ambience, and Foley that match the scene.`;
 }
 
 const QWEN_REF_MAX_PIXELS = 2_250_000;
@@ -385,7 +378,7 @@ export function emptyTabState(kind: "image" | "video"): TabState {
     videoFormat: "MP4",
     resolution: "480p",
     duration: 10,
-    audio: false,
+    audio: true,
     safety: false,
     enhancePrompt: true,
     busy: false,

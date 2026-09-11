@@ -239,10 +239,12 @@ How to write shot.prompt:
 - If they attached new photos and did not mention the created stills, refs is attached.
 - If they attached no new photos and asked for a video, refs is created.
 - Qwen 3.0 Pro can only take 3 reference images. Wan can take 10. If there are more, keep the ones the user cares about most, usually new uploads first.
-- For video, describe the motion they asked in the same explicit way.
+- For video, describe the motion they asked in the same explicit way. Always include audible speech and scene sound in the prompt.
 - Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. Video is always 480p. Duration is what they said, else 10s. Wan max 30s per clip.
 
 If they are only chatting, return shots: [] and put your answer in reply.
+reply must be one short sentence or "". Never put JSON, markdown, or the generator prompt in reply. The Qwen/Wan instruction belongs only in shots[].prompt.
+Always return one complete JSON object. Do not cut off mid-string.
 
 Return ONLY JSON, no markdown:
 {"reply":"","refs":"attached"|"created"|"both","shots":[{"kind":"image"|"video","title":"","prompt":"","duration":10}]}`;
@@ -252,14 +254,32 @@ function parsePlanJson(text: string) {
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start < 0 || end < start) {
-    return { lock: {}, reply: cleaned, shots: [] as Array<Record<string, unknown>> };
+    return { lock: {}, reply: looksLikeJson(cleaned) ? "" : cleaned, shots: [] as Array<Record<string, unknown>> };
   }
-  return JSON.parse(cleaned.slice(start, end + 1)) as {
-    lock?: Partial<AgentLock>;
-    reply?: string;
-    refs?: string;
-    shots?: Array<Record<string, unknown>>;
-  };
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1)) as {
+      lock?: Partial<AgentLock>;
+      reply?: string;
+      refs?: string;
+      shots?: Array<Record<string, unknown>>;
+    };
+  } catch {
+    return { lock: {}, reply: "", shots: [] as Array<Record<string, unknown>> };
+  }
+}
+
+function looksLikeJson(text: string) {
+  return /^\s*[{[]/.test(text);
+}
+
+function cleanReply(text: string) {
+  const next = text.trim();
+  if (!next || looksLikeJson(next)) return "";
+  return next.replace(/\{[\s\S]*$/, "").trim();
+}
+
+function askedToGenerate(text: string) {
+  return askedForVideo(text) || /\b(make|create|generate|image|photo|still|picture|render|හදන්න)\b/i.test(text);
 }
 
 export function latestUserText(memory: AgentMemory) {
@@ -471,9 +491,18 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     .join("\n\n");
 
   const content: ChatContentPart[] = [{ type: "text", text }, ...uploadedParts, ...createdParts];
-
-  const raw = await completeChat(PLAN_SYSTEM, content, 2800, loadBrainModel(), 0.55);
-  const parsed = parsePlanJson(raw);
+  let raw = await completeChat(PLAN_SYSTEM, content, 4096, loadBrainModel(), 0.55);
+  let parsed = parsePlanJson(raw);
+  if (!(parsed.shots || []).length && askedToGenerate(brief)) {
+    raw = await completeChat(
+      `${PLAN_SYSTEM}\nYour last answer was incomplete. Return ONLY complete JSON with shots filled. reply must be short.`,
+      content,
+      4096,
+      loadBrainModel(),
+      0.2
+    );
+    parsed = parsePlanJson(raw);
+  }
   const lock: AgentLock = {
     identity: "",
     wardrobe: "",
@@ -515,7 +544,27 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     else shots.push(makeShot(base));
   }
 
-  const reply = String(parsed.reply || "").trim();
+  if (!shots.length && askedToGenerate(brief)) {
+    const kind: AgentShotKind = askedForVideo(brief) ? "video" : "image";
+    const model = kind === "image" ? defaultImageModel() : defaultVideoModel();
+    const wanted = kind === "video" ? askedSeconds(brief) || 10 : 0;
+    const duration = kind === "video" ? clipVideoDuration(model as VideoTabId, wanted) : 0;
+    const base = {
+      kind,
+      title: kind === "video" ? "Video" : "Still",
+      prompt: brief,
+      duration,
+      resolution: "480p" as const,
+      model,
+      refSource,
+      useLastFrame: false,
+      frameStillIds: [] as string[],
+    };
+    if (kind === "video") shots.push(...expandLongVideo(base, wanted));
+    else shots.push(makeShot(base));
+  }
+
+  const reply = cleanReply(String(parsed.reply || ""));
   if (!shots.length && !reply) throw new Error("The agent returned no shots.");
   return {
     lock,
@@ -657,7 +706,7 @@ export async function runAgentShot(
     duration: shot.duration || 10,
     enhancePrompt: false,
     safety: false,
-    audio: false,
+    audio: true,
     resolution: "480p",
   };
 

@@ -156,6 +156,7 @@ export default function AgentView() {
         brief: userMessage.text,
         images: images.length ? images : memoryRef.current.images,
         userRefs: images.length ? images : memoryRef.current.userRefs,
+        waitingForApproval: false,
         notes: isRememberOnly(userMessage.text)
           ? [memoryRef.current.notes, userMessage.text.replace(/^\s*remember\b[:\s-]*/i, "")].filter(Boolean).join("\n")
           : memoryRef.current.notes,
@@ -216,12 +217,15 @@ export default function AgentView() {
       const planned = await planAgentJob(current);
       if (!planned.shots.length) {
         commit(
-          pushMessage(current, {
-            id: uuid(),
-            role: "assistant",
-            text: planned.reply || "Okay. Tell me what to make.",
-            createdAt: Date.now(),
-          })
+          pushMessage(
+            { ...current, waitingForApproval: false },
+            {
+              id: uuid(),
+              role: "assistant",
+              text: planned.reply || "Okay. Tell me what to make.",
+              createdAt: Date.now(),
+            }
+          )
         );
         return;
       }
