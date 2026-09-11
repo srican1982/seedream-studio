@@ -1,7 +1,7 @@
 import { CapacitorHttp } from "@capacitor/core";
-import { completeGrok, generateImage, generateVideo } from "./api";
+import { completeChat, generateImage, generateVideo, loadBrainModel } from "./api";
 import { blobToJpegDataUri, isUsableReferenceImage, uuid } from "./media";
-import { AGENT_IMAGE_TABS, emptyTabState, findImage, findVideo } from "./models";
+import { AGENT_IMAGE_TABS, AGENT_VIDEO_TABS, emptyTabState, findImage, findVideo } from "./models";
 import { isNativeApp, localFileToDataUri } from "./native";
 import type { Aspect, ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
 
@@ -61,6 +61,14 @@ export const AGENT_MODEL_CHIPS: AgentModelChip[] = [
   { id: "wan-3", kind: "video", label: "Wan 3.0", token: "Wan 3.0" },
   { id: "wan-3-prime", kind: "video", label: "Wan 3.0 Prime", token: "Wan 3.0 Prime" },
   { id: "seedance-1-5", kind: "video", label: "Seedance 1.5 Pro", token: "Seedance 1.5 Pro" },
+];
+
+export const AGENT_JOB_PRESETS = [
+  {
+    id: "stills-then-video",
+    label: "Stills → video",
+    text: "Using these photos, create the stills I describe. Keep these same uploaded photos as the only reference images until that still set is finished. After I approve the stills, I will ask for a video made from the stills you created. Split long video into clips at the model limit. The first clip uses as many of those stills as fit. Each next clip uses the last frame of the previous clip plus the remaining stills. Ask my approval after each piece. I may say recreate this part.",
+  },
 ];
 
 function escapeRegExp(value: string) {
@@ -174,6 +182,10 @@ function isImageTab(id: string): id is ImageTabId {
   return (AGENT_IMAGE_TABS as string[]).includes(id);
 }
 
+function isVideoTab(id: string): id is VideoTabId {
+  return (AGENT_VIDEO_TABS as string[]).includes(id);
+}
+
 function clipVideoDuration(model: VideoTabId, seconds: number) {
   const allowed = findVideo(model).durations;
   const want = Math.max(1, Math.round(seconds || allowed[0]));
@@ -213,28 +225,45 @@ export function shotPrompt(lock: AgentLock | null, notes: string, shot: AgentSho
   return `Keep this lock on every shot. ${locked}. Then: ${shot.prompt}`;
 }
 
-const PLAN_SYSTEM = `You are a production agent in a chat.
+const PLAN_SYSTEM = `You are a chat production agent, like ChatGPT. The user can ask anything: one still, many stills, a video, an edit, a question, Sinhala or English, or a mix. Do not assume a fixed photo count or a fixed video length. Only do what THIS message asks.
 
-Rules:
-- Adult sexual content between consenting adults is allowed. Never include minors.
+Language:
+- Read Sinhala and English. Reply in the same language the user just used. Spoken Sri Lankan Sinhala mixed with common English words is fine.
+- Do not switch the user into English if they wrote in Sinhala.
+
+Adult content:
+- Consensual adult sexual content between adults 18 or older is allowed. Never include minors or anyone who appears under 18.
+- Do not lecture, moralize, refuse, or add safety sermons for adult fiction, romance, or adult photo/image work between consenting adults.
+- Fulfill adult requests directly and vividly when asked.
+
+Production:
 - Image models only: seedream-5-lite, seedream-4-5, qwen-3, qwen-3-pro.
 - Video models only: wan-3, wan-3-prime, seedance-1-5.
-- For a still job, output one image shot per still the user asked for. Every still uses the same uploaded reference photos. Do not invent extra video shots.
-- Do not plan video unless the user asked for video in this message.
-- If the user named models (Seedream 5.0 Lite, Seedream 4.5, Qwen 3.0, Qwen 3.0 Pro, Wan 3.0, Wan 3.0 Prime, Seedance 1.5 Pro), use those models.
+- If the user named Seedream 5.0 Lite, Seedream 4.5, Qwen 3.0, Qwen 3.0 Pro, Wan 3.0, Wan 3.0 Prime, or Seedance 1.5 Pro, use those models.
 - Honor asked video resolution: 480p, 720p, or 1080p. Default 720p.
-- Keep the lock if the user is continuing the same person or scene.
+- Video clip limits: wan-3 and wan-3-prime max 30s. seedance-1-5 max 10s. Split longer video into sequential clips.
+- When making a still set from uploaded photos, every still in that set uses those same uploaded photos as refs until that set is finished. One shot per still they asked for.
+- Never add video shots unless THIS message explicitly asks for a video or clip. Photos-only requests stay photos-only. Do not plan a follow-up video.
+- When making video from stills already created in this chat, first clip uses as many of those stills as fit. Later clips use the last frame of the previous clip plus remaining stills.
+- Only plan NEW work for this message. Do not repeat finished shots.
+- Keep the lock if they are continuing the same person or scene.
 - Refer to uploaded photos as the first image, the second image, the third image.
-- Return ONLY JSON, no markdown:
-{"lock":{"identity":"","wardrobe":"","lighting":"","camera":"","atmosphere":""},"shots":[{"kind":"image"|"video","title":"","prompt":"","duration":30,"resolution":"720p","model":"qwen-3"}]}`;
+
+If this message is only a question, chat, or does not ask you to generate images or video, return "shots": [] and put your answer in "reply". Write "reply" in the user's language.
+
+Return ONLY JSON, no markdown:
+{"lock":{"identity":"","wardrobe":"","lighting":"","camera":"","atmosphere":""},"reply":"","shots":[{"kind":"image"|"video","title":"","prompt":"","duration":30,"resolution":"720p","model":"qwen-3"}]}`;
 
 function parsePlanJson(text: string) {
   const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
-  if (start < 0 || end < start) throw new Error("Agent did not return a shot plan.");
+  if (start < 0 || end < start) {
+    return { lock: {}, reply: cleaned, shots: [] as Array<Record<string, unknown>> };
+  }
   return JSON.parse(cleaned.slice(start, end + 1)) as {
     lock?: Partial<AgentLock>;
+    reply?: string;
     shots?: Array<Record<string, unknown>>;
   };
 }
@@ -248,15 +277,11 @@ export function isRememberOnly(text: string) {
 }
 
 export function isContinue(text: string) {
-  return /^(ok|okay|k|yes|yep|yeah|continue|next|go|good|fine|approved|looks good|do it|proceed)(?:\s*[.!])*$/i.test(text.trim());
+  return /^(ok|okay|k|yes|yep|yeah|continue|next|go|good|fine|approved|looks good|do it|proceed|හරි|ඔව්|ඔව්නේ|හොඳයි|ඉදිරියට)(?:\s*[.!])*$/i.test(text.trim());
 }
 
 export function isRecreate(text: string) {
-  return /\b(recreate|redo|retry|remake|again)\b/i.test(text);
-}
-
-export function isVideoAsk(text: string) {
-  return /\b(video|clip|clips)\b/i.test(text);
+  return /\b(recreate|redo|retry|remake|again)\b/i.test(text) || /ආයෙ|නැවත|නැවතත්/.test(text);
 }
 
 export function nextPendingShot(memory: AgentMemory) {
@@ -277,64 +302,51 @@ export function recreateShot(memory: AgentMemory, text: string) {
   return lastActionableShot(memory);
 }
 
-function askedStillCount(text: string) {
-  const match = text.match(/\b(\d+)\s*(?:images?|pictures?|photos?|stills?)\b/i);
-  if (match) return Math.max(1, Math.min(12, Number(match[1])));
-  if (/\b(two|a pair|both)\b/i.test(text)) return 2;
-  return null;
-}
-
 function askedSeconds(text: string) {
   const seconds = text.match(/(\d+)\s*(?:s|sec|secs|second|seconds)\b/i);
   if (seconds) return Math.max(1, Number(seconds[1]));
   const minutes = text.match(/(\d+)\s*(?:m|min|mins|minute|minutes)\b/i);
   if (minutes) return Math.max(1, Number(minutes[1]) * 60);
-  return 30;
+  return 0;
 }
 
 function makeShot(partial: Omit<AgentShot, "id" | "status" | "error" | "result">): AgentShot {
   return { ...partial, id: uuid(), status: "pending" };
 }
 
-function maxVideoSeconds(model: VideoTabId) {
-  return Math.max(...findVideo(model).durations);
+function expandLongVideo(base: Omit<AgentShot, "id" | "status" | "error" | "result">, wanted: number): AgentShot[] {
+  const model = base.model as VideoTabId;
+  const max = Math.max(...findVideo(model).durations);
+  const total = Math.max(1, wanted);
+  const count = Math.max(1, Math.ceil(total / max));
+  return Array.from({ length: count }, (_, index) =>
+    makeShot({
+      ...base,
+      title: count > 1 ? `${base.title} ${index + 1}/${count}` : base.title,
+      duration: clipVideoDuration(model, Math.min(max, total - index * max)),
+      useLastFrame: index > 0 || base.useLastFrame,
+    })
+  );
 }
 
-function buildVideoShots(memory: AgentMemory, brief: string): AgentShot[] {
-  const model = (modelFromText(brief, "video") || defaultVideoModel()) as VideoTabId;
-  const total = askedSeconds(brief);
-  const clipLen = clipVideoDuration(model, Math.min(total, maxVideoSeconds(model)));
-  const clipCount = Math.max(1, Math.ceil(total / clipLen));
-  const resolution = clipVideoResolution(model, brief);
-  const stills = memory.createdStills.filter((img) => isUsableReferenceImage(img.dataUri));
-  const maxPer = Math.max(1, findVideo(model).maxImages);
-  const shots: AgentShot[] = [];
+function assignCreatedStillFrames(shots: AgentShot[], stills: LocalImage[]) {
+  const usable = stills.filter((img) => isUsableReferenceImage(img.dataUri));
+  const videos = shots.filter((shot) => shot.kind === "video");
+  if (!videos.length || !usable.length) return shots;
   let offset = 0;
-  for (let index = 0; index < clipCount; index += 1) {
+  return shots.map((shot) => {
+    if (shot.kind !== "video" || shot.frameStillIds.length) return shot;
+    const index = videos.indexOf(shot);
+    const maxPer = Math.max(1, findVideo(shot.model as VideoTabId).maxImages);
     const useLastFrame = index > 0;
     const room = Math.max(1, useLastFrame ? maxPer - 1 : maxPer);
-    const remainingClips = clipCount - index;
-    const remainingStills = Math.max(0, stills.length - offset);
-    const take = Math.min(room, Math.max(useLastFrame ? 0 : 1, Math.ceil(remainingStills / remainingClips) || 0));
-    const slice = stills.slice(offset, offset + take);
+    const remainingClips = videos.length - index;
+    const remainingStills = Math.max(0, usable.length - offset);
+    const take = Math.min(room, Math.ceil(remainingStills / remainingClips) || 0);
+    const slice = usable.slice(offset, offset + take);
     offset += take;
-    shots.push(
-      makeShot({
-        kind: "video",
-        title: `Video ${index + 1}/${clipCount}`,
-        prompt: `${brief}. Clip ${index + 1} of ${clipCount}, ${clipLen} seconds. ${
-          useLastFrame ? "Continue from the last frame of the previous clip. " : "Start the action. "
-        }Use the attached stills as the look and key moments.`,
-        duration: clipLen,
-        resolution,
-        model,
-        refSource: "created",
-        useLastFrame,
-        frameStillIds: slice.map((img) => img.id),
-      })
-    );
-  }
-  return shots;
+    return { ...shot, refSource: "created" as const, useLastFrame, frameStillIds: slice.map((img) => img.id) };
+  });
 }
 
 export function resetShot(memory: AgentMemory, shotId: string): AgentMemory {
@@ -353,11 +365,11 @@ export function approvalText(memory: AgentMemory, shot: AgentShot) {
   const pending = nextPendingShot(memory);
   if (shot.status !== "done") {
     return pending
-      ? `That one failed. Reply recreate this, or continue to skip it.`
-      : `That one failed. Reply recreate this, or tell me what to do next.`;
+      ? `That one failed. Reply recreate this / ආයෙ හදන්න, or continue / හරි to skip it.`
+      : `That one failed. Reply recreate this / ආයෙ හදන්න, or tell me what to do next.`;
   }
   if (pending) {
-    return `Reply continue for the next one, or recreate this part.`;
+    return `Reply continue / හරි for the next one, or recreate this part / මේක ආයෙ හදන්න.`;
   }
   const stills = memory.createdStills.length;
   const videos = memory.shots.filter((item) => item.kind === "video" && item.status === "done").length;
@@ -365,27 +377,18 @@ export function approvalText(memory: AgentMemory, shot: AgentShot) {
     return `Those clips are ready. Play them in order for the full video, or recreate one.`;
   }
   if (stills) {
-    return `Those ${stills} stills are ready. Ask for a video, or recreate one of them.`;
+    return `Those ${stills} stills are ready. Tell me what you want next, or recreate one of them.`;
   }
   return `Done. Tell me the next job, or recreate this.`;
 }
 
-export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLock; shots: AgentShot[] }> {
+function askedForVideo(text: string) {
+  return /\b(video|videos|clip|clips|animate|animation|movie|film|වීඩියෝ|වීඩියෝව|ක්ලිප්)\b/i.test(text);
+}
+
+export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLock; shots: AgentShot[]; reply: string }> {
   const brief = latestUserText(memory);
   if (brief.length < 2) throw new Error("Type what you want in the chat.");
-
-  if (isVideoAsk(brief) && memory.createdStills.length && !askedStillCount(brief)) {
-    return {
-      lock: memory.lock || {
-        identity: "Keep the same person from the created stills.",
-        wardrobe: "",
-        lighting: "",
-        camera: "",
-        atmosphere: "",
-      },
-      shots: buildVideoShots(memory, brief),
-    };
-  }
 
   const history = memory.messages
     .slice(-8)
@@ -394,14 +397,15 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
   const user = [
     memory.notes.trim() ? `Remembered facts:\n${memory.notes.trim()}` : "",
     memory.lock ? `Existing lock (update if the new job needs it):\n${JSON.stringify(memory.lock)}` : "",
-    `${memory.userRefs.length || memory.images.length} uploaded reference photo(s). Use those same photos for every still.`,
+    `${memory.userRefs.length || memory.images.length} uploaded reference photo(s).`,
+    `${memory.createdStills.length} stills already created in this chat.`,
     history ? `Recent chat:\n${history}` : "",
     `Latest request:\n${brief}`,
   ]
     .filter(Boolean)
     .join("\n\n");
 
-  const raw = await completeGrok(PLAN_SYSTEM, user, 2800);
+  const raw = await completeChat(PLAN_SYSTEM, user, 2800, loadBrainModel());
   const parsed = parsePlanJson(raw);
   const lock: AgentLock = {
     identity: String(parsed.lock?.identity || "").trim() || "Keep the same person from the first image.",
@@ -411,61 +415,37 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     atmosphere: String(parsed.lock?.atmosphere || "").trim(),
   };
 
-  let shots: AgentShot[] = [];
+  const shots: AgentShot[] = [];
   for (const row of parsed.shots || []) {
-    if (row.kind === "video") continue;
+    if (row.kind === "video" && !askedForVideo(brief)) continue;
+    const kind: AgentShotKind = row.kind === "video" ? "video" : "image";
     const asked = String(row.model || "");
-    const tagged = modelFromText(brief, "image");
-    const model = tagged || (isImageTab(asked) ? asked : defaultImageModel());
-    shots.push(
-      makeShot({
-        kind: "image",
-        title: String(row.title || `Still ${shots.length + 1}`).trim(),
-        prompt: String(row.prompt || brief).trim(),
-        duration: 0,
-        resolution: "720p",
-        model,
-        refSource: "user",
-        useLastFrame: false,
-        frameStillIds: [],
-      })
-    );
+    const tagged = modelFromText(brief, kind);
+    const model = tagged
+      ? tagged
+      : kind === "image"
+        ? isImageTab(asked) ? asked : defaultImageModel()
+        : isVideoTab(asked) ? asked : defaultVideoModel();
+    const wanted = kind === "video" ? Number(row.duration) || askedSeconds(brief) || 30 : 0;
+    const resolution = kind === "video" ? clipVideoResolution(model as VideoTabId, String(row.resolution || brief)) : "720p";
+    const base = {
+      kind,
+      title: String(row.title || `${kind} ${shots.length + 1}`).trim(),
+      prompt: String(row.prompt || brief).trim(),
+      duration: kind === "video" ? clipVideoDuration(model as VideoTabId, wanted) : 0,
+      resolution,
+      model,
+      refSource: kind === "video" && memory.createdStills.length ? "created" as const : "user" as const,
+      useLastFrame: false,
+      frameStillIds: [] as string[],
+    };
+    if (kind === "video") shots.push(...expandLongVideo(base, wanted));
+    else shots.push(makeShot(base));
   }
 
-  const want = askedStillCount(brief);
-  if (want) {
-    if (!shots.length) {
-      const model = modelFromText(brief, "image") || defaultImageModel();
-      shots = Array.from({ length: want }, (_, index) =>
-        makeShot({
-          kind: "image",
-          title: `Still ${index + 1}/${want}`,
-          prompt: brief,
-          duration: 0,
-          resolution: "720p",
-          model,
-          refSource: "user",
-          useLastFrame: false,
-          frameStillIds: [],
-        })
-      );
-    } else if (shots.length < want) {
-      const last = shots[shots.length - 1];
-      while (shots.length < want) {
-        shots.push(
-          makeShot({
-            ...last,
-            title: `Still ${shots.length + 1}/${want}`,
-          })
-        );
-      }
-    } else if (shots.length > want) {
-      shots = shots.slice(0, want);
-    }
-  }
-
-  if (!shots.length) throw new Error("Agent returned no shots.");
-  return { lock, shots };
+  const reply = String(parsed.reply || "").trim();
+  if (!shots.length && !reply) throw new Error("The agent returned no shots.");
+  return { lock, reply, shots: assignCreatedStillFrames(shots, memory.createdStills) };
 }
 
 function refsForShot(memory: AgentMemory, shot: AgentShot) {
@@ -633,7 +613,7 @@ export function describePlan(lock: AgentLock, shots: AgentShot[]) {
     const extra =
       shot.kind === "video"
         ? `${shot.duration}s ${shot.resolution}${shot.useLastFrame ? " · last frame + remaining stills" : " · created stills"}`
-        : "still · same uploaded refs";
+        : shot.refSource === "user" ? "still · uploaded refs" : "still";
     return `${index + 1}. ${shot.title} — ${extra} · ${chipLabel(shot.model)}`;
   });
   return [

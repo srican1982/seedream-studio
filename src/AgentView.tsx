@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import {
+  AGENT_JOB_PRESETS,
   AGENT_MODEL_CHIPS,
   approvalText,
   chipInText,
@@ -22,7 +23,7 @@ import {
   type AgentMessage,
   type AgentShot,
 } from "./agent";
-import { downloadResult } from "./api";
+import { BRAIN_MODELS, downloadResult, loadBrainModel, saveBrainModel, type BrainModelId } from "./api";
 import { fileToDataUri, uuid } from "./media";
 import { isNativeApp, pickGalleryImages } from "./native";
 import type { LocalImage, StudioResult } from "./types";
@@ -30,6 +31,7 @@ import type { LocalImage, StudioResult } from "./types";
 export default function AgentView() {
   const [memory, setMemory] = useState<AgentMemory>(emptyAgentMemory);
   const [draft, setDraft] = useState("");
+  const [brain, setBrain] = useState<BrainModelId>(loadBrainModel);
   const [pending, setPending] = useState<LocalImage[]>([]);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
@@ -82,6 +84,16 @@ export default function AgentView() {
   function addChip(token: string) {
     setDraft((prev) => toggleChipToken(prev, token));
     inputRef.current?.focus();
+  }
+
+  function addPreset(text: string) {
+    setDraft((prev) => (prev.trim() ? `${prev.trim()}\n${text}` : text));
+    inputRef.current?.focus();
+  }
+
+  function pickBrain(id: BrainModelId) {
+    saveBrainModel(id);
+    setBrain(id);
   }
 
   async function useResult(result: StudioResult) {
@@ -189,7 +201,7 @@ export default function AgentView() {
               id: uuid(),
               role: "assistant",
               text: lastActionableShot(current)
-                ? "Nothing waiting. Ask for a video, or recreate a part."
+                ? "Nothing waiting. Tell me what to make next, or recreate a part."
                 : "Nothing waiting. Tell me what to make.",
               createdAt: Date.now(),
             })
@@ -202,13 +214,24 @@ export default function AgentView() {
 
       setProgress("Planning…");
       const planned = await planAgentJob(current);
+      if (!planned.shots.length) {
+        commit(
+          pushMessage(current, {
+            id: uuid(),
+            role: "assistant",
+            text: planned.reply || "Okay. Tell me what to make.",
+            createdAt: Date.now(),
+          })
+        );
+        return;
+      }
       const kept = current.shots.filter((shot) => shot.status === "done");
       current = pushMessage(
         { ...current, lock: planned.lock, shots: [...kept, ...planned.shots], waitingForApproval: true },
         {
           id: uuid(),
           role: "assistant",
-          text: describePlan(planned.lock, planned.shots),
+          text: planned.reply ? `${planned.reply}\n\n${describePlan(planned.lock, planned.shots)}` : describePlan(planned.lock, planned.shots),
           createdAt: Date.now(),
         }
       );
@@ -254,7 +277,7 @@ export default function AgentView() {
 
       <div className="chat-models">
         <div className="chat-models-head">
-          <span>Models</span>
+          <span>Brain</span>
           <button
             className="link"
             type="button"
@@ -268,6 +291,31 @@ export default function AgentView() {
           </button>
         </div>
         <div className="chat-chips top">
+          {BRAIN_MODELS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={brain === item.id ? "on" : ""}
+              onClick={() => pickBrain(item.id)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+        <div className="chat-models-head">
+          <span>Models</span>
+        </div>
+        <div className="chat-chips">
+          {AGENT_JOB_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              className={draft.includes(preset.text) ? "on preset" : "preset"}
+              onClick={() => addPreset(preset.text)}
+            >
+              {preset.label}
+            </button>
+          ))}
           {AGENT_MODEL_CHIPS.map((chip) => (
             <button
               key={chip.id}
@@ -285,7 +333,7 @@ export default function AgentView() {
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Attach photos, tap a model, then say what you want. I’ll do one piece at a time so you can continue or recreate.</p>
+            <p>Ask anything in Sinhala or English. Attach photos, tap a model, or use Stills → video as a starting prompt. I’ll do one piece at a time so you can continue or recreate.</p>
           </div>
         ) : (
           memory.messages.map((message) => (

@@ -586,6 +586,10 @@ code { color: var(--accent-2); }
   color: #fff;
   background: #2a1a24;
 }
+.chat-chips button.preset {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+  color: #fff;
+}
 .chat-approve { display: flex; gap: 8px; padding-bottom: 8px; }
 .chat-approve button {
   flex: 1;

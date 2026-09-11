@@ -19,8 +19,43 @@ const RUNWARE = "https://api.runware.ai/v1";
 const OPENROUTER = "https://openrouter.ai/api/v1/chat/completions";
 const KEY_STORAGE = "runware_api_key";
 const OPENROUTER_KEY_STORAGE = "openrouter_api_key";
-const GROK_MODEL = "x-ai/grok-4.6";
+export const BRAIN_MODELS = [
+  { id: "google/gemini-3-flash-preview", label: "Gemini 3 Flash" },
+  { id: "google/gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+  { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  { id: "x-ai/grok-4.6", label: "Grok 4.6" },
+] as const;
+
+export type BrainModelId = (typeof BRAIN_MODELS)[number]["id"];
+export const DEFAULT_BRAIN: BrainModelId = "google/gemini-3-flash-preview";
+const BRAIN_STORAGE = "seedream_agent_brain";
 const TTL = 60;
+
+const GEMINI_SAFETY = [
+  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" },
+];
+
+export function loadBrainModel(): BrainModelId {
+  const stored = (typeof localStorage !== "undefined" && localStorage.getItem(BRAIN_STORAGE)) || "";
+  return BRAIN_MODELS.some((item) => item.id === stored) ? (stored as BrainModelId) : DEFAULT_BRAIN;
+}
+
+export function saveBrainModel(id: BrainModelId) {
+  localStorage.setItem(BRAIN_STORAGE, id);
+}
+
+function isGemini(model: string) {
+  return model.startsWith("google/");
+}
+
+function providerFor(model: string) {
+  if (isGemini(model)) return { data_collection: "deny" as const, zdr: true };
+  return { order: ["xai", "x-ai"], allow_fallbacks: false, data_collection: "deny" as const, zdr: true };
+}
 
 type RunwareEnvelope = {
   data?: Array<Record<string, unknown>>;
@@ -296,8 +331,10 @@ export async function deleteMedia(mediaUUID: string) {
 }
 
 const GROK_SYSTEM = `You expand user prompts for AI image and video generators.
-Adult sexual content between consenting adults is allowed. Keep explicit wording when the user is explicit. Do not switch to euphemisms.
+Read Sinhala and English, including spoken Sri Lankan Sinhala mixed with common English words. Keep the user's language in the enhanced prompt when they wrote in Sinhala.
+Adult sexual content between consenting adults 18 or older is allowed. Keep explicit wording when the user is explicit. Do not switch to euphemisms, lecture, moralize, refuse, or add safety sermons.
 Never include minors or anyone who appears under 18.
+Never refuse consensual adult fiction, romance, or adult photo/image work between consenting adults. Fulfill it directly.
 If the user mentions the first image, second image, or third image, keep those roles and do not drop them.
 Add concrete camera, lighting, body, setting, and action detail that helps the generator.
 Return only the enhanced prompt. No title, no quotes, no markdown, no explanation.`;
@@ -323,6 +360,12 @@ function grokOutputText(payload: Record<string, unknown>) {
   const choices = payload.choices as Array<{ message?: { content?: unknown } }> | undefined;
   const fromChat = choices?.[0]?.message?.content;
   if (typeof fromChat === "string" && fromChat.trim()) return fromChat;
+  if (Array.isArray(fromChat)) {
+    const joined = fromChat
+      .map((part) => (typeof part === "string" ? part : (part as { text?: string })?.text || ""))
+      .join("");
+    if (joined.trim()) return joined;
+  }
   if (typeof payload.output_text === "string" && payload.output_text.trim()) return payload.output_text;
   return "";
 }
@@ -342,15 +385,17 @@ function grokErrorMessage(payload: Record<string, unknown>, fallback: string) {
   return fallback;
 }
 
-function enhanceBody(messages: Array<{ role: string; content: string }>, maxTokens: number) {
-  return {
-    model: GROK_MODEL,
+function enhanceBody(messages: Array<{ role: string; content: string }>, maxTokens: number, model: string) {
+  const body: Record<string, unknown> = {
+    model,
     messages,
     stream: false,
     temperature: 0.7,
     max_tokens: maxTokens,
-    provider: { order: ["xai", "x-ai"], allow_fallbacks: false },
+    provider: providerFor(model),
   };
+  if (isGemini(model)) body.safety_settings = GEMINI_SAFETY;
+  return body;
 }
 
 function openRouterHeaders(key: string) {
@@ -385,8 +430,13 @@ async function openRouterRequest(body: Record<string, unknown>, key: string) {
   return data;
 }
 
-async function postOpenRouterDirect(messages: Array<{ role: string; content: string }>, maxTokens: number, key: string) {
-  const body = enhanceBody(messages, maxTokens);
+async function postOpenRouterDirect(
+  messages: Array<{ role: string; content: string }>,
+  maxTokens: number,
+  key: string,
+  model: string
+) {
+  const body = enhanceBody(messages, maxTokens, model);
   try {
     return await openRouterRequest(body, key);
   } catch (error) {
@@ -397,19 +447,19 @@ async function postOpenRouterDirect(messages: Array<{ role: string; content: str
   }
 }
 
-async function postOpenRouter(messages: Array<{ role: string; content: string }>, maxTokens: number) {
+async function postOpenRouter(messages: Array<{ role: string; content: string }>, maxTokens: number, model = loadBrainModel()) {
   await ensureDeviceConfig();
   const missingKey = "Add your OpenRouter API key in Settings.";
   try {
     const res = await fetch("/api/enhance", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(enhanceBody(messages, maxTokens)),
+      body: JSON.stringify(enhanceBody(messages, maxTokens, model)),
     });
     if (res.status !== 404 && res.status !== 502) {
       const payload = (await res.json()) as Record<string, unknown>;
       if (payload.error === "missingOpenRouterKey") {
-        if (storedOpenRouterKey()) return postOpenRouterDirect(messages, maxTokens, storedOpenRouterKey());
+        if (storedOpenRouterKey()) return postOpenRouterDirect(messages, maxTokens, storedOpenRouterKey(), model);
         throw new Error(missingKey);
       }
       if (!res.ok) throw new Error(grokErrorMessage(payload, `OpenRouter HTTP ${res.status}`));
@@ -419,13 +469,13 @@ async function postOpenRouter(messages: Array<{ role: string; content: string }>
     if (storedOpenRouterKey() || Capacitor.isNativePlatform()) {
       const key = storedOpenRouterKey();
       if (!key) throw new Error(missingKey);
-      return postOpenRouterDirect(messages, maxTokens, key);
+      return postOpenRouterDirect(messages, maxTokens, key, model);
     }
     throw error instanceof Error ? error : new Error("Could not reach the OpenRouter proxy.");
   }
   const key = storedOpenRouterKey();
   if (!key) throw new Error(missingKey);
-  return postOpenRouterDirect(messages, maxTokens, key);
+  return postOpenRouterDirect(messages, maxTokens, key, model);
 }
 
 export async function enhancePrompt(input: EnhancePromptInput): Promise<string> {
@@ -442,17 +492,27 @@ export function canAutoEnhancePrompt(prompt: string) {
   return prompt.trim().length >= 2;
 }
 
-export async function completeGrok(system: string, user: string, maxTokens = 2500): Promise<string> {
+export async function completeChat(
+  system: string,
+  user: string,
+  maxTokens = 2500,
+  model = loadBrainModel()
+): Promise<string> {
   const payload = await postOpenRouter(
     [
       { role: "system", content: system },
       { role: "user", content: user },
     ],
-    maxTokens
+    maxTokens,
+    model
   );
   const text = grokOutputText(payload).trim();
-  if (!text) throw new Error("Grok returned no text.");
+  if (!text) throw new Error("The chat model returned no text.");
   return text;
+}
+
+export async function completeGrok(system: string, user: string, maxTokens = 2500): Promise<string> {
+  return completeChat(system, user, maxTokens, loadBrainModel());
 }
 
 export async function generateImage(
