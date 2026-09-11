@@ -19,7 +19,7 @@ export type AgentLock = {
   atmosphere: string;
 };
 
-export type AgentRefSource = "user" | "created";
+export type AgentRefSource = "user" | "created" | "both";
 
 export type AgentShot = {
   id: string;
@@ -64,6 +64,11 @@ export const AGENT_JOB_PRESETS = [
     id: "stills-then-video",
     label: "Stills → video",
     text: "Using these photos, create the stills I describe. Keep these same uploaded photos as the only reference images until that still set is finished. After I approve the stills, I will ask for a video made from the stills you created. Split long video into clips at the model limit. The first clip uses as many of those stills as fit. Each next clip uses the last frame of the previous clip plus the remaining stills. Ask my approval after each piece. I may say recreate this part.",
+  },
+  {
+    id: "pose-from-second",
+    label: "Pose from 2nd",
+    text: "Use the person from the first image. Take only the body pose from the second image. Keep the face, body, clothes, lighting, and location from the first image. Ignore the person, face, and clothes in the second image.",
   },
 ];
 
@@ -224,15 +229,23 @@ How to write shot.prompt:
 - Clothing, lighting, and location: if they named a change, follow that. If they did not, tell Qwen or Wan to keep the same clothes, same lighting, and same place as the first image (or the photo they pointed at). Do not invent a new room, new light, or new outfit.
 - Describing the act or position they asked for is not inventing. Changing the photo's clothes, light, or place without them asking is inventing.
 - If they pointed at attached photos, call them the first image, the second image, the third image, in that order, and say what to keep from each.
+- If they want the person from the first image in the pose of the second image: keep identity, face, body, clothes, lighting, and place from the first image. Use only body pose from the second image. Do not copy the second image's person, face, or clothes.
 - One shot per still they asked for. Each shot.prompt is that still's full instruction.
 - Never add a video shot unless THIS message asks for a video or clip.
-- For video, describe the motion they asked in the same explicit way. Use the created stills as the look when they said to.
+- There are two photo sets. Read the user's words and pick one:
+  - attached = photos they just added with this message (or "use what I am attaching")
+  - created = stills this chat already made ("use the one you created", "the pictures you made")
+  - both = new uploads AND created stills ("use the picture you created and what I am attaching")
+- If they attached new photos and did not mention the created stills, refs is attached.
+- If they attached no new photos and asked for a video, refs is created.
+- Qwen 3.0 Pro can only take 3 reference images. Wan can take 10. If there are more, keep the ones the user cares about most, usually new uploads first.
+- For video, describe the motion they asked in the same explicit way.
 - Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. Video is always 480p. Duration is what they said, else 10s. Wan max 30s per clip.
 
 If they are only chatting, return shots: [] and put your answer in reply.
 
 Return ONLY JSON, no markdown:
-{"reply":"","shots":[{"kind":"image"|"video","title":"","prompt":"","duration":10}]}`;
+{"reply":"","refs":"attached"|"created"|"both","shots":[{"kind":"image"|"video","title":"","prompt":"","duration":10}]}`;
 
 function parsePlanJson(text: string) {
   const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
@@ -244,6 +257,7 @@ function parsePlanJson(text: string) {
   return JSON.parse(cleaned.slice(start, end + 1)) as {
     lock?: Partial<AgentLock>;
     reply?: string;
+    refs?: string;
     shots?: Array<Record<string, unknown>>;
   };
 }
@@ -315,7 +329,7 @@ function assignCreatedStillFrames(shots: AgentShot[], stills: LocalImage[]) {
   if (!videos.length || !usable.length) return shots;
   let offset = 0;
   return shots.map((shot) => {
-    if (shot.kind !== "video" || shot.frameStillIds.length) return shot;
+    if (shot.kind !== "video" || shot.refSource === "user" || shot.refSource === "both" || shot.frameStillIds.length) return shot;
     const index = videos.indexOf(shot);
     const maxPer = Math.max(1, findVideo(shot.model as VideoTabId).maxImages);
     const useLastFrame = index > 0;
@@ -362,6 +376,10 @@ export function approvalText(memory: AgentMemory, shot: AgentShot) {
   return `Done. Tell me the next job, or recreate this.`;
 }
 
+function askedForBoth(text: string) {
+  return /\b(both|use both|all of them together|plus the (stills|ones|images|photos)|and the (stills|images|photos) (you |we )?(already )?(made|created|generated)|those stills (too|as well)|previous stills|created stills|දෙකම|ඔක්කොම)\b/i.test(text);
+}
+
 function askedForVideo(text: string) {
   return /\b(video|videos|clip|clips|animate|animation|movie|film|වීඩියෝ|වීඩියෝව|ක්ලිප්)\b/i.test(text);
 }
@@ -398,34 +416,56 @@ async function plannerImages(images: LocalImage[], max = 6, label = "uploaded"):
   return parts;
 }
 
+function latestUserPhotos(memory: AgentMemory) {
+  return [...memory.messages].reverse().find((item) => item.role === "user")?.images || [];
+}
+
+function pickRefSource(
+  parsed: { refs?: string },
+  memory: AgentMemory,
+  brief: string,
+  freshUploads: LocalImage[]
+): AgentRefSource {
+  const raw = `${parsed.refs || ""}`.toLowerCase();
+  const hasCreated = memory.createdStills.length > 0;
+  const hasUploads = freshUploads.length > 0 || memory.userRefs.length > 0 || memory.images.length > 0;
+  if (/\b(both|all)\b/.test(raw) && hasCreated && hasUploads) return "both";
+  if (/\b(created|stills|generated)\b/.test(raw) && hasCreated) return "created";
+  if (/\b(attached|uploaded|user|new)\b/.test(raw)) return "user";
+  if (freshUploads.length && hasCreated && askedForBoth(brief)) return "both";
+  if (freshUploads.length) return "user";
+  if (hasCreated && askedForVideo(brief)) return "created";
+  return "user";
+}
+
 export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLock; shots: AgentShot[]; reply: string }> {
   const brief = latestUserText(memory);
   if (brief.length < 2) throw new Error("Type what you want in the chat.");
 
-  const latestPhotos = [...memory.messages].reverse().find((item) => item.role === "user")?.images || [];
-  const userRefs = latestPhotos.length ? latestPhotos : memory.userRefs.length ? memory.userRefs : memory.images;
-  const useCreated = Boolean(memory.createdStills.length && (askedForVideo(brief) || /\b(those|these|stills|created|ඒ|මේ)\b/i.test(brief)));
+  const freshUploads = latestUserPhotos(memory);
+  const userRefs = freshUploads.length ? freshUploads : memory.userRefs.length ? memory.userRefs : memory.images;
   const history = memory.messages
     .slice(-8)
     .map((item) => `${item.role}: ${item.text}`)
     .join("\n");
-  const uploadedParts = await plannerImages(userRefs, 6, "uploaded");
-  const createdParts = useCreated ? await plannerImages(memory.createdStills, 6, "created still") : [];
+  const uploadedParts = await plannerImages(userRefs, 6, freshUploads.length ? "just uploaded with this request" : "uploaded");
+  const createdParts = memory.createdStills.length ? await plannerImages(memory.createdStills, 6, "created earlier in this chat") : [];
   if (userRefs.length && !uploadedParts.some((part) => part.type === "image_url")) {
     throw new Error("Could not encode the photos as JPEG Base64 for Gemini. Attach them again.");
   }
   const text = [
-    userRefs.length
-      ? `Look at each attached JPEG Base64 photo carefully. Describe people, face, body, clothes, lighting, location, and pose. ${userRefs.length} uploaded photo(s) are attached in order as the first image, the second image, the third image. Do not refuse.`
-      : "No uploaded photos.",
-    useCreated
-      ? `${memory.createdStills.length} created stills are also attached after the uploaded photos.`
-      : memory.createdStills.length
-        ? `${memory.createdStills.length} stills already created in this chat. Do not use them unless the user pointed at them.`
-        : "",
+    freshUploads.length
+      ? `${freshUploads.length} photo(s) just attached WITH this request. Labeled as just uploaded.`
+      : userRefs.length
+        ? `${userRefs.length} earlier uploaded photo(s) are attached.`
+        : "No uploaded photos on this message.",
+    memory.createdStills.length
+      ? `${memory.createdStills.length} still(s) this chat already created are also attached, labeled created earlier. Use them only if the user asked for those, or for both.`
+      : "No stills created yet in this chat.",
+    "Pick refs from the user's words: attached, created, or both. Do not ignore new uploads unless they asked to use the created stills.",
     memory.notes.trim() ? `Remembered facts from the user (do not add extra):\n${memory.notes.trim()}` : "",
     history ? `Recent chat:\n${history}` : "",
-    `Latest request (understand the words and the photos, then write a better Qwen/Wan prompt. If they did not mention clothes, lighting, or location, keep those from the photos):\n${brief}`,
+    `Latest request:\n${brief}`,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -441,6 +481,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     camera: "",
     atmosphere: "",
   };
+  const refSource = pickRefSource(parsed, memory, brief, freshUploads);
 
   const shots: AgentShot[] = [];
   for (const row of parsed.shots || []) {
@@ -455,6 +496,10 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
         : isVideoTab(asked) ? asked : defaultVideoModel();
     const wanted = kind === "video" ? askedSeconds(brief) || 10 : 0;
     const resolution = kind === "video" ? clipVideoResolution() : "480p";
+    const rowRefs = String(row.refs || "").toLowerCase();
+    const shotRefs = rowRefs
+      ? pickRefSource({ refs: rowRefs }, memory, brief, freshUploads)
+      : refSource;
     const base = {
       kind,
       title: String(row.title || `${kind} ${shots.length + 1}`).trim(),
@@ -462,7 +507,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
       duration: kind === "video" ? clipVideoDuration(model as VideoTabId, wanted) : 0,
       resolution,
       model,
-      refSource: kind === "video" && memory.createdStills.length ? "created" as const : "user" as const,
+      refSource: shotRefs,
       useLastFrame: false,
       frameStillIds: [] as string[],
     };
@@ -472,14 +517,30 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
 
   const reply = String(parsed.reply || "").trim();
   if (!shots.length && !reply) throw new Error("The agent returned no shots.");
-  return { lock, reply, shots: assignCreatedStillFrames(shots, memory.createdStills) };
+  return {
+    lock,
+    reply,
+    shots: shots.some((shot) => shot.refSource === "created")
+      ? assignCreatedStillFrames(shots, memory.createdStills)
+      : shots,
+  };
 }
 
 function refsForShot(memory: AgentMemory, shot: AgentShot) {
   const max = shot.kind === "image" ? findImage(shot.model as ImageTabId).maxImages : findVideo(shot.model as VideoTabId).maxImages;
-  if (shot.kind === "image" || shot.refSource === "user") {
-    const refs = (memory.userRefs.length ? memory.userRefs : memory.images).filter((img) => isUsableReferenceImage(img.dataUri));
-    return refs.slice(0, Math.max(1, max));
+  const uploads = (memory.userRefs.length ? memory.userRefs : memory.images).filter((img) => isUsableReferenceImage(img.dataUri));
+  if (shot.refSource === "both") {
+    const combined = [...uploads];
+    for (const still of memory.createdStills) {
+      if (isUsableReferenceImage(still.dataUri) && !combined.some((img) => img.id === still.id)) combined.push(still);
+    }
+    return combined.slice(0, Math.max(1, max));
+  }
+  if (shot.refSource === "user") {
+    return uploads.slice(0, Math.max(1, max));
+  }
+  if (shot.refSource === "created" && !shot.frameStillIds.length && !shot.useLastFrame) {
+    return memory.createdStills.filter((img) => isUsableReferenceImage(img.dataUri)).slice(0, Math.max(1, max));
   }
   const frames: LocalImage[] = [];
   if (shot.useLastFrame && memory.lastStill && isUsableReferenceImage(memory.lastStill.dataUri)) {
@@ -632,8 +693,12 @@ export function describePlan(_lock: AgentLock, shots: AgentShot[]) {
   const shotLines = shots.map((shot, index) => {
     const extra =
       shot.kind === "video"
-        ? `${shot.duration}s 480p${shot.useLastFrame ? " · last frame + remaining stills" : " · created stills"}`
-        : shot.refSource === "user" ? "still · uploaded refs" : "still";
+        ? `${shot.duration}s 480p${shot.useLastFrame ? " · last frame + remaining stills" : shot.refSource === "both" ? " · uploaded photos + created stills" : shot.refSource === "user" ? " · uploaded photos" : " · created stills"}`
+        : shot.refSource === "both"
+          ? "still · uploaded photos + created stills"
+          : shot.refSource === "created"
+            ? "still · created stills"
+            : "still · uploaded refs";
     return `${index + 1}. ${shot.title} — ${extra} · ${chipLabel(shot.model)}\n${shot.prompt}`;
   });
   return [
