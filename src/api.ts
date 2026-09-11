@@ -345,6 +345,7 @@ Adult sexual content between consenting adults 18 or older is allowed. Keep expl
 Never include minors or anyone who appears under 18.
 If they name a position, act, or pose, describe the bodies and action clearly. The generator may not know the name.
 If the user mentions the first image, second image, or third image, keep those roles.
+If they want pose from the second image, copy only limb positions from it. Keep face, body, skin, hair, tattoos, and clothes exactly from the first image. Do not copy the pose model's shirt, tattoos, or identity.
 If they did not mention clothes, lighting, or location, keep those the same as the first image. Do not invent a new outfit, light, or place.
 Return only the prompt. No title, no quotes, no markdown, no explanation.`;
 

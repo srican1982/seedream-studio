@@ -68,7 +68,7 @@ export const AGENT_JOB_PRESETS = [
   {
     id: "pose-from-second",
     label: "Pose from 2nd",
-    text: "Use the person from the first image. Take only the body pose from the second image. Keep the face, body, clothes, lighting, and location from the first image. Ignore the person, face, and clothes in the second image.",
+    text: "Keep the people in the first image exactly: same face, same body, same skin, same hair, same tattoos or no tattoos, same clothes. Take only the body pose from the second image: limb positions and how they sit, stand, or lie. Do not copy clothes, tattoos, jewelry, hair, or identity from the second image. Lighting and location stay from the first image.",
   },
 ];
 
@@ -112,6 +112,8 @@ export function modelFromText(text: string, kind: AgentShotKind) {
     .find((chip) => chipInText(text, chip.token))?.id;
 }
 
+export const VIDEO_REF_LIMIT = 10;
+
 export type AgentMemory = {
   brief: string;
   notes: string;
@@ -119,9 +121,12 @@ export type AgentMemory = {
   images: LocalImage[];
   userRefs: LocalImage[];
   createdStills: LocalImage[];
+  chosenRefs: LocalImage[];
   shots: AgentShot[];
   lastStill: LocalImage | null;
   waitingForApproval: boolean;
+  awaitingVideoRefs: boolean;
+  hasPickedVideoRefs: boolean;
   messages: AgentMessage[];
 };
 
@@ -133,9 +138,12 @@ export function emptyAgentMemory(): AgentMemory {
     images: [],
     userRefs: [],
     createdStills: [],
+    chosenRefs: [],
     shots: [],
     lastStill: null,
     waitingForApproval: false,
+    awaitingVideoRefs: false,
+    hasPickedVideoRefs: false,
     messages: [],
   };
 }
@@ -153,6 +161,7 @@ export function loadAgentMemory(): AgentMemory {
       images,
       userRefs: Array.isArray(parsed.userRefs) && parsed.userRefs.length ? parsed.userRefs : images,
       createdStills: Array.isArray(parsed.createdStills) ? parsed.createdStills : [],
+      chosenRefs: Array.isArray(parsed.chosenRefs) ? parsed.chosenRefs : [],
       shots: Array.isArray(parsed.shots)
         ? parsed.shots.map((shot) => ({
             ...shot,
@@ -165,6 +174,8 @@ export function loadAgentMemory(): AgentMemory {
         : [],
       lastStill: parsed.lastStill || null,
       waitingForApproval: Boolean(parsed.waitingForApproval),
+      awaitingVideoRefs: Boolean(parsed.awaitingVideoRefs),
+      hasPickedVideoRefs: Boolean(parsed.hasPickedVideoRefs),
       messages: Array.isArray(parsed.messages) ? parsed.messages : [],
     };
   } catch {
@@ -229,15 +240,21 @@ How to write shot.prompt:
 - Clothing, lighting, and location: if they named a change, follow that. If they did not, tell Qwen or Wan to keep the same clothes, same lighting, and same place as the first image (or the photo they pointed at). Do not invent a new room, new light, or new outfit.
 - Describing the act or position they asked for is not inventing. Changing the photo's clothes, light, or place without them asking is inventing.
 - If they pointed at attached photos, call them the first image, the second image, the third image, in that order, and say what to keep from each.
-- If they want the person from the first image in the pose of the second image: keep identity, face, body, clothes, lighting, and place from the first image. Use only body pose from the second image. Do not copy the second image's person, face, or clothes.
+- If they already picked photos in tap order, those are the ONLY references. refs must be attached. First tapped is the first image, second tapped is the second image. Do not add other stills.
+- If they want the person from the first image in the pose of the second image:
+  - The result person must be exactly the first-image person: same face, same body, same skin, same hair, same tattoos or no tattoos, same clothes.
+  - From the second image take ONLY the body pose: limb positions, torso angle, how they sit/stand/lie, contact points. Describe that pose in words (arms, legs, hips, facing) without describing the second person's clothes, tattoos, face, hair, or identity.
+  - Do not copy a white shirt, tattoos, jewelry, hair, or body type from the pose reference. Those belong to the pose model, not the main person.
+  - Keep lighting and location from the first image unless the user named a change.
 - One shot per still they asked for. Each shot.prompt is that still's full instruction.
 - Never add a video shot unless THIS message asks for a video or clip.
-- There are two photo sets. Read the user's words and pick one:
+- There are two photo sets unless they already picked photos in tap order:
   - attached = photos they just added with this message (or "use what I am attaching")
   - created = stills this chat already made ("use the one you created", "the pictures you made")
   - both = new uploads AND created stills ("use the picture you created and what I am attaching")
+- If they already picked photos in tap order, refs is attached and those are the only photos.
 - If they attached new photos and did not mention the created stills, refs is attached.
-- If they attached no new photos and asked for a video, refs is created.
+- If they attached no new photos and asked for a video, refs is created — unless they already picked photos.
 - Qwen 3.0 Pro can only take 3 reference images. Wan can take 10. If there are more, keep the ones the user cares about most, usually new uploads first.
 - For video, describe the motion they asked in the same explicit way. Always include audible speech and scene sound in the prompt.
 - Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. Video is always 480p. Duration is what they said, else 10s. Wan max 30s per clip.
@@ -400,8 +417,12 @@ function askedForBoth(text: string) {
   return /\b(both|use both|all of them together|plus the (stills|ones|images|photos)|and the (stills|images|photos) (you |we )?(already )?(made|created|generated)|those stills (too|as well)|previous stills|created stills|දෙකම|ඔක්කොම)\b/i.test(text);
 }
 
-function askedForVideo(text: string) {
+export function askedForVideo(text: string) {
   return /\b(video|videos|clip|clips|animate|animation|movie|film|වීඩියෝ|වීඩියෝව|ක්ලිප්)\b/i.test(text);
+}
+
+export function videoRefQuestion() {
+  return "Which photos should go in the video? Tap them in order on the bar above. First tap is the first image, second tap is the second image. If you tap a wrong one, remove it from the row below. Then tap Use these. You can pick up to 10.\n\nවීඩියෝවට මොන පොටෝද? උඩ තීරුවේ ඕන පිළිවෙලට tap කරන්න. පළවෙනි tap එක පළවෙනි image එක. වැරදි එකක් නම් යටින් × තියලා අයින් කරන්න. ඊට පස්සේ Use these.";
 }
 
 async function toGeminiJpegBase64(source: string): Promise<string | null> {
@@ -436,6 +457,37 @@ async function plannerImages(images: LocalImage[], max = 6, label = "uploaded"):
   return parts;
 }
 
+export type LibraryPhoto = {
+  id: string;
+  label: string;
+  kind: "upload" | "made";
+  image: LocalImage;
+};
+
+export function photoLibrary(memory: AgentMemory, extra: LocalImage[] = []): LibraryPhoto[] {
+  const seen = new Set<string>();
+  const out: LibraryPhoto[] = [];
+  const add = (img: LocalImage, kind: "upload" | "made") => {
+    if (!img?.dataUri && !img?.preview) return;
+    const key = img.id || (img.dataUri || img.preview).slice(0, 64);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      id: img.id,
+      label: String(out.length + 1),
+      kind,
+      image: img,
+    });
+  };
+  for (const msg of memory.messages) {
+    if (msg.role !== "user") continue;
+    for (const img of msg.images || []) add(img, "upload");
+  }
+  for (const img of extra) add(img, "upload");
+  for (const img of memory.createdStills) add(img, "made");
+  return out;
+}
+
 function latestUserPhotos(memory: AgentMemory) {
   return [...memory.messages].reverse().find((item) => item.role === "user")?.images || [];
 }
@@ -446,6 +498,7 @@ function pickRefSource(
   brief: string,
   freshUploads: LocalImage[]
 ): AgentRefSource {
+  if (memory.hasPickedVideoRefs) return "user";
   const raw = `${parsed.refs || ""}`.toLowerCase();
   const hasCreated = memory.createdStills.length > 0;
   const hasUploads = freshUploads.length > 0 || memory.userRefs.length > 0 || memory.images.length > 0;
@@ -462,27 +515,38 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
   const brief = latestUserText(memory);
   if (brief.length < 2) throw new Error("Type what you want in the chat.");
 
-  const freshUploads = latestUserPhotos(memory);
-  const userRefs = freshUploads.length ? freshUploads : memory.userRefs.length ? memory.userRefs : memory.images;
+  const picked = memory.hasPickedVideoRefs;
+  const freshUploads = picked ? memory.chosenRefs : latestUserPhotos(memory);
+  const userRefs = picked
+    ? memory.chosenRefs
+    : freshUploads.length
+      ? freshUploads
+      : memory.userRefs.length
+        ? memory.userRefs
+        : memory.images;
   const history = memory.messages
     .slice(-8)
     .map((item) => `${item.role}: ${item.text}`)
     .join("\n");
-  const uploadedParts = await plannerImages(userRefs, 6, freshUploads.length ? "just uploaded with this request" : "uploaded");
-  const createdParts = memory.createdStills.length ? await plannerImages(memory.createdStills, 6, "created earlier in this chat") : [];
+  const uploadedParts = await plannerImages(userRefs, 10, picked ? "selected in tap order" : "uploaded");
+  const createdParts = picked ? [] : memory.createdStills.length ? await plannerImages(memory.createdStills, 6, "created earlier in this chat") : [];
   if (userRefs.length && !uploadedParts.some((part) => part.type === "image_url")) {
     throw new Error("Could not encode the photos as JPEG Base64 for Gemini. Attach them again.");
   }
   const text = [
-    freshUploads.length
-      ? `${freshUploads.length} photo(s) just attached WITH this request. Labeled as just uploaded.`
-      : userRefs.length
-        ? `${userRefs.length} earlier uploaded photo(s) are attached.`
-        : "No uploaded photos on this message.",
-    memory.createdStills.length
-      ? `${memory.createdStills.length} still(s) this chat already created are also attached, labeled created earlier. Use them only if the user asked for those, or for both.`
-      : "No stills created yet in this chat.",
-    "Pick refs from the user's words: attached, created, or both. Do not ignore new uploads unless they asked to use the created stills.",
+    picked
+      ? `The user picked ${memory.chosenRefs.length} photo(s) in tap order. These are the ONLY references. First tapped is the first image, second tapped is the second image, and so on. Do not add other stills.`
+      : freshUploads.length
+        ? `${freshUploads.length} photo(s) just attached WITH this request. Labeled as just uploaded.`
+        : userRefs.length
+          ? `${userRefs.length} earlier uploaded photo(s) are attached.`
+          : "No uploaded photos on this message.",
+    picked
+      ? ""
+      : memory.createdStills.length
+        ? `${memory.createdStills.length} still(s) this chat already created are also attached, labeled created earlier. Use them only if the user asked for those, or for both.`
+        : "No stills created yet in this chat.",
+    picked ? "" : "Pick refs from the user's words: attached, created, or both. Do not ignore new uploads unless they asked to use the created stills.",
     memory.notes.trim() ? `Remembered facts from the user (do not add extra):\n${memory.notes.trim()}` : "",
     history ? `Recent chat:\n${history}` : "",
     `Latest request:\n${brief}`,
@@ -510,7 +574,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     camera: "",
     atmosphere: "",
   };
-  const refSource = pickRefSource(parsed, memory, brief, freshUploads);
+  const refSource = memory.hasPickedVideoRefs ? "user" : pickRefSource(parsed, memory, brief, freshUploads);
 
   const shots: AgentShot[] = [];
   for (const row of parsed.shots || []) {
@@ -526,9 +590,11 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     const wanted = kind === "video" ? askedSeconds(brief) || 10 : 0;
     const resolution = kind === "video" ? clipVideoResolution() : "480p";
     const rowRefs = String(row.refs || "").toLowerCase();
-    const shotRefs = rowRefs
-      ? pickRefSource({ refs: rowRefs }, memory, brief, freshUploads)
-      : refSource;
+    const shotRefs = memory.hasPickedVideoRefs
+      ? "user"
+      : rowRefs
+        ? pickRefSource({ refs: rowRefs }, memory, brief, freshUploads)
+        : refSource;
     const base = {
       kind,
       title: String(row.title || `${kind} ${shots.length + 1}`).trim(),
@@ -569,7 +635,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
   return {
     lock,
     reply,
-    shots: shots.some((shot) => shot.refSource === "created")
+    shots: !memory.hasPickedVideoRefs && shots.some((shot) => shot.refSource === "created")
       ? assignCreatedStillFrames(shots, memory.createdStills)
       : shots,
   };
@@ -577,6 +643,9 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
 
 function refsForShot(memory: AgentMemory, shot: AgentShot) {
   const max = shot.kind === "image" ? findImage(shot.model as ImageTabId).maxImages : findVideo(shot.model as VideoTabId).maxImages;
+  if (memory.hasPickedVideoRefs) {
+    return memory.chosenRefs.filter((img) => isUsableReferenceImage(img.dataUri)).slice(0, Math.max(1, max));
+  }
   const uploads = (memory.userRefs.length ? memory.userRefs : memory.images).filter((img) => isUsableReferenceImage(img.dataUri));
   if (shot.refSource === "both") {
     const combined = [...uploads];
@@ -742,7 +811,7 @@ export function describePlan(_lock: AgentLock, shots: AgentShot[]) {
   const shotLines = shots.map((shot, index) => {
     const extra =
       shot.kind === "video"
-        ? `${shot.duration}s 480p${shot.useLastFrame ? " · last frame + remaining stills" : shot.refSource === "both" ? " · uploaded photos + created stills" : shot.refSource === "user" ? " · uploaded photos" : " · created stills"}`
+        ? `${shot.duration}s 480p${shot.useLastFrame ? " · last frame + remaining stills" : shot.refSource === "both" ? " · uploaded photos + created stills" : shot.refSource === "user" ? " · the photos you picked, in tap order" : " · created stills"}`
         : shot.refSource === "both"
           ? "still · uploaded photos + created stills"
           : shot.refSource === "created"

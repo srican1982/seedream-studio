@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } fro
 import {
   AGENT_JOB_PRESETS,
   AGENT_MODEL_CHIPS,
+  VIDEO_REF_LIMIT,
+  askedForVideo,
   approvalText,
   chipInText,
   describePlan,
@@ -12,6 +14,7 @@ import {
   lastActionableShot,
   loadAgentMemory,
   nextPendingShot,
+  photoLibrary,
   planAgentJob,
   recreateShot,
   resetShot,
@@ -19,9 +22,11 @@ import {
   runAgentShot,
   saveAgentMemory,
   toggleChipToken,
+  videoRefQuestion,
   type AgentMemory,
   type AgentMessage,
   type AgentShot,
+  type LibraryPhoto,
 } from "./agent";
 import { BRAIN_MODELS, downloadResult, loadBrainModel, saveBrainModel, type BrainModelId } from "./api";
 import { fileToDataUri, uuid } from "./media";
@@ -139,6 +144,93 @@ export default function AgentView() {
     return current;
   }
 
+  function askForVideoPhotos(current: AgentMemory, attached: LocalImage[]) {
+    const next = pushMessage(
+      {
+        ...current,
+        awaitingVideoRefs: true,
+        hasPickedVideoRefs: false,
+        chosenRefs: attached.slice(0, VIDEO_REF_LIMIT),
+      },
+      {
+        id: uuid(),
+        role: "assistant",
+        text: videoRefQuestion(),
+        createdAt: Date.now(),
+      }
+    );
+    commit(next);
+  }
+
+  function tapLibraryPhoto(photo: LibraryPhoto) {
+    const current = memoryRef.current;
+    if (!current.awaitingVideoRefs || busy) return;
+    if (current.chosenRefs.some((img) => img.id === photo.id)) return;
+    if (current.chosenRefs.length >= VIDEO_REF_LIMIT) return;
+    commit({ ...current, chosenRefs: [...current.chosenRefs, photo.image] });
+  }
+
+  function removeChosen(id: string) {
+    const current = memoryRef.current;
+    if (!current.awaitingVideoRefs || busy) return;
+    commit({ ...current, chosenRefs: current.chosenRefs.filter((img) => img.id !== id) });
+  }
+
+  async function planAndRun(current: AgentMemory) {
+    setProgress("Planning…");
+    const planned = await planAgentJob(current);
+    if (!planned.shots.length) {
+      commit(
+        pushMessage(
+          { ...current, waitingForApproval: false, awaitingVideoRefs: false },
+          {
+            id: uuid(),
+            role: "assistant",
+            text: planned.reply || "Okay. Tell me what to make.",
+            createdAt: Date.now(),
+          }
+        )
+      );
+      return;
+    }
+    const kept = current.shots.filter((shot) => shot.status === "done");
+    current = pushMessage(
+      { ...current, lock: planned.lock, shots: [...kept, ...planned.shots], waitingForApproval: true, awaitingVideoRefs: false },
+      {
+        id: uuid(),
+        role: "assistant",
+        text: planned.reply ? `${planned.reply}\n\n${describePlan(planned.lock, planned.shots)}` : describePlan(planned.lock, planned.shots),
+        createdAt: Date.now(),
+      }
+    );
+    commit(current);
+    const first = planned.shots[0];
+    if (first) await runOne(current, first);
+  }
+
+  async function usePickedPhotos() {
+    if (busy || !memoryRef.current.awaitingVideoRefs) return;
+    const current = { ...memoryRef.current, awaitingVideoRefs: false, hasPickedVideoRefs: true };
+    commit(current);
+    setBusy(true);
+    setProgress(null);
+    try {
+      await planAndRun(current);
+    } catch (error) {
+      commit(
+        pushMessage(memoryRef.current, {
+          id: uuid(),
+          role: "assistant",
+          text: error instanceof Error ? error.message : "Something went wrong.",
+          createdAt: Date.now(),
+        })
+      );
+    } finally {
+      setBusy(false);
+      setProgress(null);
+    }
+  }
+
   async function onSend(preset?: string) {
     const text = (preset ?? draft).trim();
     if ((!text && pending.length === 0) || busy) return;
@@ -166,22 +258,75 @@ export default function AgentView() {
     commit(current);
     setDraft("");
     setPending([]);
+
+    if (isRememberOnly(userMessage.text)) {
+      commit(
+        pushMessage(current, {
+          id: uuid(),
+          role: "assistant",
+          text: "Saved. I’ll keep that in memory for the next shots.",
+          createdAt: Date.now(),
+        })
+      );
+      return;
+    }
+
+    if (current.awaitingVideoRefs && !isRecreate(userMessage.text)) {
+      if (isContinue(userMessage.text) || /use these/i.test(userMessage.text)) {
+        current = { ...current, awaitingVideoRefs: false, hasPickedVideoRefs: true };
+        commit(current);
+        setBusy(true);
+        setProgress(null);
+        try {
+          await planAndRun(current);
+        } catch (error) {
+          commit(
+            pushMessage(memoryRef.current, {
+              id: uuid(),
+              role: "assistant",
+              text: error instanceof Error ? error.message : "Something went wrong.",
+              createdAt: Date.now(),
+            })
+          );
+        } finally {
+          setBusy(false);
+          setProgress(null);
+        }
+        return;
+      }
+      if (askedForVideo(userMessage.text)) {
+        askForVideoPhotos(current, images);
+        return;
+      }
+      const merged = [...current.chosenRefs];
+      for (const img of images) {
+        if (!merged.some((item) => item.id === img.id)) merged.push(img);
+      }
+      commit(
+        pushMessage(
+          { ...current, chosenRefs: merged.slice(0, VIDEO_REF_LIMIT) },
+          {
+            id: uuid(),
+            role: "assistant",
+            text: images.length
+              ? "Added that photo. Tap more on the bar, or tap Use these."
+              : "Tap the photos on the bar in order, then tap Use these.",
+            createdAt: Date.now(),
+          }
+        )
+      );
+      return;
+    }
+
+    if (askedForVideo(userMessage.text) && !isContinue(userMessage.text) && !isRecreate(userMessage.text)) {
+      askForVideoPhotos(current, images);
+      return;
+    }
+
     setBusy(true);
     setProgress(null);
 
     try {
-      if (isRememberOnly(userMessage.text)) {
-        commit(
-          pushMessage(current, {
-            id: uuid(),
-            role: "assistant",
-            text: "Saved. I’ll keep that in memory for the next shots.",
-            createdAt: Date.now(),
-          })
-        );
-        return;
-      }
-
       if (isRecreate(userMessage.text)) {
         const target = recreateShot(current, userMessage.text);
         if (!target) {
@@ -213,35 +358,9 @@ export default function AgentView() {
         return;
       }
 
-      setProgress("Planning…");
-      const planned = await planAgentJob(current);
-      if (!planned.shots.length) {
-        commit(
-          pushMessage(
-            { ...current, waitingForApproval: false },
-            {
-              id: uuid(),
-              role: "assistant",
-              text: planned.reply || "Okay. Tell me what to make.",
-              createdAt: Date.now(),
-            }
-          )
-        );
-        return;
-      }
-      const kept = current.shots.filter((shot) => shot.status === "done");
-      current = pushMessage(
-        { ...current, lock: planned.lock, shots: [...kept, ...planned.shots], waitingForApproval: true },
-        {
-          id: uuid(),
-          role: "assistant",
-          text: planned.reply ? `${planned.reply}\n\n${describePlan(planned.lock, planned.shots)}` : describePlan(planned.lock, planned.shots),
-          createdAt: Date.now(),
-        }
-      );
+      current = { ...current, chosenRefs: [], hasPickedVideoRefs: false };
       commit(current);
-      const first = planned.shots[0];
-      if (first) await runOne(current, first);
+      await planAndRun(current);
     } catch (error) {
       commit(
         pushMessage(memoryRef.current, {
@@ -264,6 +383,9 @@ export default function AgentView() {
     }
   }
 
+  const library = photoLibrary(memory, pending);
+  const picking = memory.awaitingVideoRefs && !busy;
+
   return (
     <div className="chat">
       <input
@@ -278,6 +400,59 @@ export default function AgentView() {
           void addFiles(picked);
         }}
       />
+
+      {library.length || picking ? (
+        <div className={`photo-tray${picking ? " picking" : ""}`}>
+          <div className="chat-models-head">
+            <span>{picking ? "Tap photos in order" : "Photos"}</span>
+            {picking ? <span>{memory.chosenRefs.length}/{VIDEO_REF_LIMIT}</span> : null}
+          </div>
+          {library.length ? (
+            <div className="photo-bar" role="list">
+              {library.map((photo) => {
+                const order = memory.chosenRefs.findIndex((img) => img.id === photo.id);
+                return (
+                  <button
+                    key={photo.id}
+                    type="button"
+                    className={`photo-bar-item${order >= 0 ? " on" : ""}`}
+                    role="listitem"
+                    disabled={!picking}
+                    onClick={() => tapLibraryPhoto(photo)}
+                  >
+                    <img src={photo.image.preview || photo.image.dataUri} alt="" />
+                    <span className="photo-bar-num">{photo.label}</span>
+                    <span className="photo-bar-kind">{photo.kind === "made" ? "Made" : "Yours"}</span>
+                    {order >= 0 ? <span className="photo-bar-order">{order + 1}</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="photo-picked-empty">No photos yet. Attach some, or tap Use these for a video with no stills.</p>
+          )}
+          {picking ? (
+            <div className="photo-picked">
+              {memory.chosenRefs.length ? (
+                memory.chosenRefs.map((img, index) => (
+                  <span key={img.id} className="photo-picked-thumb">
+                    <img src={img.preview || img.dataUri} alt="" />
+                    <em>{index + 1}</em>
+                    <button type="button" onClick={() => removeChosen(img.id)} aria-label="Remove photo">
+                      ×
+                    </button>
+                  </span>
+                ))
+              ) : (
+                <p className="photo-picked-empty">No photos selected yet</p>
+              )}
+              <button className="photo-use" type="button" onClick={() => void usePickedPhotos()}>
+                Use these
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="chat-models">
         <div className="chat-models-head">
@@ -382,7 +557,7 @@ export default function AgentView() {
       </div>
 
       <div className="chat-dock">
-        {memory.waitingForApproval && !busy ? (
+        {memory.waitingForApproval && !busy && !memory.awaitingVideoRefs ? (
           <div className="chat-approve">
             <button type="button" onClick={() => void onSend("continue")}>
               Continue
@@ -412,7 +587,7 @@ export default function AgentView() {
             ref={inputRef}
             rows={1}
             value={draft}
-            placeholder="Ask anything"
+            placeholder={picking ? "Tap photos above, or add another" : "Ask anything"}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKey}
           />
