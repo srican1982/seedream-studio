@@ -75,6 +75,12 @@ button { cursor: pointer; }
   align-items: flex-start;
   gap: 12px;
 }
+.top-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
 .brand { font-weight: 800; letter-spacing: -0.03em; font-size: 1.15rem; }
 .sub { color: var(--muted); font-size: 0.78rem; margin-top: 2px; }
 .top-actions { display: flex; align-items: center; gap: 8px; }
@@ -510,6 +516,106 @@ code { color: var(--accent-2); }
   overflow-x: auto;
   padding: 0 0 8px;
   -webkit-overflow-scrolling: touch;
+}
+.chats-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 28;
+}
+.chats-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: #0008;
+  padding: 0;
+}
+.chats-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(320px, 86vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: calc(12px + env(safe-area-inset-top, 0px)) 12px calc(12px + env(safe-area-inset-bottom, 0px));
+  background: #12131a;
+  border-right: 1px solid var(--line);
+  animation: chats-in 0.2s ease;
+}
+@keyframes chats-in {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(0); }
+}
+.chats-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.chats-panel-head strong {
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+}
+.chats-new {
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  padding: 11px 12px;
+}
+.chats-new:disabled { opacity: 0.45; }
+.chats-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  -webkit-overflow-scrolling: touch;
+}
+.chats-item {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #111218;
+  overflow: hidden;
+}
+.chats-item.on {
+  border-color: var(--accent);
+  background: #2a1a24;
+}
+.chats-item-open {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  text-align: left;
+  font-size: 0.86rem;
+  font-weight: 650;
+  padding: 11px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chats-item-open:disabled { opacity: 1; }
+.chats-item-del {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  width: 36px;
+  height: 40px;
+  font-size: 16px;
+  line-height: 1;
+}
+.chats-item-del:disabled { opacity: 0.4; }
+.chats-empty {
+  margin: 12px 4px;
+  color: var(--muted);
+  font-size: 0.82rem;
 }
 .chat-pill {
   flex: 0 0 auto;

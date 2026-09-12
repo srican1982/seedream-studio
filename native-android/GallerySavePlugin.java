@@ -53,7 +53,7 @@ public class GallerySavePlugin extends Plugin {
                 values.put(MediaStore.MediaColumns.MIME_TYPE, resolvedMime);
                 if (Build.VERSION.SDK_INT >= 29) {
                     String folder = isVideo ? Environment.DIRECTORY_MOVIES : Environment.DIRECTORY_PICTURES;
-                    values.put(MediaStore.MediaColumns.RELATIVE_PATH, folder + "/Seedream Agent");
+                    values.put(MediaStore.MediaColumns.RELATIVE_PATH, folder + "/AI Story");
                     values.put(MediaStore.MediaColumns.IS_PENDING, 1);
                 }
 

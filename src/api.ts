@@ -421,7 +421,7 @@ function openRouterHeaders(key: string) {
     Authorization: `Bearer ${key}`,
     "Content-Type": "application/json",
     "HTTP-Referer": "https://github.com/srican1982/seedream-studio",
-    "X-Title": "Seedream Agent",
+    "X-Title": "AI Story",
   };
 }
 

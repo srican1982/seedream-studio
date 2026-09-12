@@ -2,8 +2,10 @@ import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } fro
 import {
   VIDEO_REF_LIMIT,
   askedForVideo,
+  applyRecreateEdits,
   approvalText,
   activeChatId,
+  beginRecreate,
   deleteAgentChat,
   describePlan,
   emptyAgentMemory,
@@ -17,9 +19,11 @@ import {
   openAgentChat,
   photoLibrary,
   planAgentJob,
+  recreateChangeText,
+  recreateQuestion,
+  recreateRefLimit,
   recreateShot,
   removeLibraryPhoto,
-  resetShot,
   resultToStill,
   runAgentShot,
   saveAgentMemory,
@@ -41,7 +45,12 @@ const COMPOSER_MAX = 200;
 
 type MediaViewer = { kind: ResultKind; url: string; alt: string };
 
-export default function AgentView() {
+type AgentViewProps = {
+  chatsOpen?: boolean;
+  onChatsOpenChange?: (open: boolean) => void;
+};
+
+export default function AgentView({ chatsOpen = false, onChatsOpenChange }: AgentViewProps) {
   const [memory, setMemory] = useState<AgentMemory>(emptyAgentMemory);
   const [chats, setChats] = useState<AgentChatInfo[]>([]);
   const [chatId, setChatId] = useState("");
@@ -56,7 +65,9 @@ export default function AgentView() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const memoryRef = useRef(memory);
   const viewerOpen = useRef(false);
+  const chatsOpenRef = useRef(false);
   memoryRef.current = memory;
+  chatsOpenRef.current = chatsOpen;
 
   useEffect(() => {
     setMemory(loadAgentMemory());
@@ -97,12 +108,20 @@ export default function AgentView() {
 
   useEffect(() => {
     function onPop() {
-      if (!viewerOpen.current) return;
-      viewerOpen.current = false;
-      setViewer(null);
+      if (viewerOpen.current) {
+        viewerOpen.current = false;
+        setViewer(null);
+        return;
+      }
+      if (chatsOpenRef.current) {
+        chatsOpenRef.current = false;
+        onChatsOpenChange?.(false);
+      }
     }
     function onKey(event: globalThis.KeyboardEvent) {
-      if (event.key === "Escape" && viewerOpen.current) closeMedia();
+      if (event.key !== "Escape") return;
+      if (viewerOpen.current) closeMedia();
+      else if (chatsOpenRef.current) closeChats();
     }
     window.addEventListener("popstate", onPop);
     window.addEventListener("keydown", onKey);
@@ -110,19 +129,40 @@ export default function AgentView() {
       window.removeEventListener("popstate", onPop);
       window.removeEventListener("keydown", onKey);
     };
-  }, []);
+  }, [onChatsOpenChange]);
+
+  useEffect(() => {
+    if (chatsOpen) {
+      chatsOpenRef.current = true;
+      if (!(history.state as { chatsPanel?: number } | null)?.chatsPanel) {
+        history.pushState({ chatsPanel: 1 }, "");
+      }
+      return;
+    }
+    if (chatsOpenRef.current && (history.state as { chatsPanel?: number } | null)?.chatsPanel) {
+      chatsOpenRef.current = false;
+      history.back();
+      return;
+    }
+    chatsOpenRef.current = false;
+  }, [chatsOpen]);
 
   function refreshChats() {
     setChats(listAgentChats());
     setChatId(activeChatId());
   }
 
-  function showChat(next: AgentMemory) {
+  function closeChats() {
+    onChatsOpenChange?.(false);
+  }
+
+  function showChat(next: AgentMemory, keepPanel = false) {
     memoryRef.current = next;
     setMemory(next);
     setDraft("");
     setPending([]);
     refreshChats();
+    if (!keepPanel) closeChats();
   }
 
   function commit(next: AgentMemory) {
@@ -219,16 +259,57 @@ export default function AgentView() {
 
   function tapLibraryPhoto(photo: LibraryPhoto) {
     const current = memoryRef.current;
-    if (!current.awaitingVideoRefs || busy) return;
+    if ((!current.awaitingVideoRefs && !current.awaitingRecreate) || busy) return;
     if (current.chosenRefs.some((img) => img.id === photo.id)) return;
-    if (current.chosenRefs.length >= VIDEO_REF_LIMIT) return;
+    const shot = current.shots.find((item) => item.id === current.recreateShotId);
+    const limit = current.awaitingRecreate ? recreateRefLimit(shot?.kind || "video") : VIDEO_REF_LIMIT;
+    if (current.chosenRefs.length >= limit) return;
     commit({ ...current, chosenRefs: [...current.chosenRefs, photo.image] });
   }
 
   function removeChosen(id: string) {
     const current = memoryRef.current;
-    if (!current.awaitingVideoRefs || busy) return;
+    if ((!current.awaitingVideoRefs && !current.awaitingRecreate) || busy) return;
     commit({ ...current, chosenRefs: current.chosenRefs.filter((img) => img.id !== id) });
+  }
+
+  function askToRecreate(current: AgentMemory, text = "") {
+    const target = recreateShot(current, text);
+    if (!target) {
+      commit(pushMessage(current, { id: uuid(), role: "assistant", text: "Nothing to recreate yet.", createdAt: Date.now() }));
+      return;
+    }
+    commit(
+      pushMessage(beginRecreate(current, target, recreateChangeText(text)), {
+        id: uuid(),
+        role: "assistant",
+        text: recreateQuestion(target.kind),
+        createdAt: Date.now(),
+      })
+    );
+    inputRef.current?.focus();
+  }
+
+  async function finishRecreate(current: AgentMemory, text: string, extra: LocalImage[]) {
+    setBusy(true);
+    setProgress("Updating…");
+    try {
+      const edited = await applyRecreateEdits(current, text, extra);
+      commit(edited.memory);
+      await runOne(edited.memory, edited.shot);
+    } catch (error) {
+      commit(
+        pushMessage(memoryRef.current, {
+          id: uuid(),
+          role: "assistant",
+          text: error instanceof Error ? error.message : "Something went wrong.",
+          createdAt: Date.now(),
+        })
+      );
+    } finally {
+      setBusy(false);
+      setProgress(null);
+    }
   }
 
   function deleteLibraryPhoto(id: string) {
@@ -242,7 +323,7 @@ export default function AgentView() {
     if (!planned.shots.length) {
       commit(
         pushMessage(
-          { ...current, waitingForApproval: false, awaitingVideoRefs: false },
+          { ...current, waitingForApproval: false, awaitingVideoRefs: false, awaitingRecreate: false, recreateShotId: "", recreateNote: "" },
           {
             id: uuid(),
             role: "assistant",
@@ -255,7 +336,16 @@ export default function AgentView() {
     }
     const kept = current.shots.filter((shot) => shot.status === "done");
     current = pushMessage(
-      { ...current, lock: planned.lock, shots: [...kept, ...planned.shots], waitingForApproval: true, awaitingVideoRefs: false },
+      {
+        ...current,
+        lock: planned.lock,
+        shots: [...kept, ...planned.shots],
+        waitingForApproval: true,
+        awaitingVideoRefs: false,
+        awaitingRecreate: false,
+        recreateShotId: "",
+        recreateNote: "",
+      },
       {
         id: uuid(),
         role: "assistant",
@@ -293,12 +383,13 @@ export default function AgentView() {
 
   async function onSend(preset?: string) {
     const text = (preset ?? draft).trim();
-    if ((!text && pending.length === 0) || busy) return;
+    const recreating = memoryRef.current.awaitingRecreate;
+    if ((!text && pending.length === 0 && !recreating) || busy) return;
     const images = pending;
     const userMessage: AgentMessage = {
       id: uuid(),
       role: "user",
-      text: text || "Use these photos.",
+      text: text || (recreating ? "Recreate this" : "Use these photos."),
       images,
       createdAt: Date.now(),
     };
@@ -328,6 +419,11 @@ export default function AgentView() {
           createdAt: Date.now(),
         })
       );
+      return;
+    }
+
+    if (current.awaitingRecreate) {
+      await finishRecreate(current, userMessage.text, images);
       return;
     }
 
@@ -388,14 +484,7 @@ export default function AgentView() {
 
     try {
       if (isRecreate(userMessage.text)) {
-        const target = recreateShot(current, userMessage.text);
-        if (!target) {
-          commit(pushMessage(current, { id: uuid(), role: "assistant", text: "Nothing to recreate yet.", createdAt: Date.now() }));
-          return;
-        }
-        current = resetShot(current, target.id);
-        commit(current);
-        await runOne(current, { ...target, status: "pending" });
+        askToRecreate(current, userMessage.text);
         return;
       }
 
@@ -444,7 +533,10 @@ export default function AgentView() {
   }
 
   const library = photoLibrary(memory, pending);
-  const picking = memory.awaitingVideoRefs && !busy;
+  const recreating = memory.awaitingRecreate && !busy;
+  const picking = (memory.awaitingVideoRefs || memory.awaitingRecreate) && !busy;
+  const recreateKind = memory.shots.find((item) => item.id === memory.recreateShotId)?.kind || "video";
+  const photoLimit = recreating ? recreateRefLimit(recreateKind) : VIDEO_REF_LIMIT;
 
   return (
     <div className="chat">
@@ -463,7 +555,13 @@ export default function AgentView() {
 
       <div className="chat-toolbar">
         <span>
-          {picking ? `Tap photos in order · ${memory.chosenRefs.length}/${VIDEO_REF_LIMIT}` : library.length ? "Photos" : ""}
+          {recreating
+            ? `Change photos · ${memory.chosenRefs.length}/${photoLimit}`
+            : picking
+              ? `Tap photos in order · ${memory.chosenRefs.length}/${VIDEO_REF_LIMIT}`
+              : library.length
+                ? "Photos"
+                : ""}
         </span>
         <button
           className="link"
@@ -477,29 +575,52 @@ export default function AgentView() {
         </button>
       </div>
 
-      {chats.length > 1 || chats[0]?.title !== "New chat" || memory.messages.length ? (
-        <div className="chat-list" role="list">
-          {chats.map((chat) => (
-            <div key={chat.id} className={`chat-pill${chat.id === chatId ? " on" : ""}`} role="listitem">
-              <button
-                type="button"
-                className="chat-pill-open"
-                disabled={busy || chat.id === chatId}
-                onClick={() => showChat(openAgentChat(chat.id, memoryRef.current))}
-              >
-                {chat.title}
-              </button>
-              <button
-                type="button"
-                className="chat-pill-del"
-                disabled={busy}
-                aria-label={`Delete ${chat.title}`}
-                onClick={() => showChat(deleteAgentChat(chat.id, memoryRef.current))}
-              >
-                ×
+      {chatsOpen ? (
+        <div className="chats-overlay" role="dialog" aria-modal="true" aria-label="Chats">
+          <button type="button" className="chats-backdrop" aria-label="Close chats" onClick={closeChats} />
+          <aside className="chats-panel">
+            <div className="chats-panel-head">
+              <strong>Chats</strong>
+              <button type="button" className="link" onClick={closeChats}>
+                Close
               </button>
             </div>
-          ))}
+            <button
+              className="chats-new"
+              type="button"
+              disabled={busy}
+              onClick={() => showChat(startNewAgentChat(memoryRef.current))}
+            >
+              New chat
+            </button>
+            <div className="chats-list" role="list">
+              {chats.length ? (
+                chats.map((chat) => (
+                  <div key={chat.id} className={`chats-item${chat.id === chatId ? " on" : ""}`} role="listitem">
+                    <button
+                      type="button"
+                      className="chats-item-open"
+                      disabled={busy || chat.id === chatId}
+                      onClick={() => showChat(openAgentChat(chat.id, memoryRef.current))}
+                    >
+                      {chat.title}
+                    </button>
+                    <button
+                      type="button"
+                      className="chats-item-del"
+                      disabled={busy}
+                      aria-label={`Delete ${chat.title}`}
+                      onClick={() => showChat(deleteAgentChat(chat.id, memoryRef.current), true)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <p className="chats-empty">No chats yet</p>
+              )}
+            </div>
+          </aside>
         </div>
       ) : null}
 
@@ -535,7 +656,11 @@ export default function AgentView() {
               })}
             </div>
           ) : (
-            <p className="photo-picked-empty">No photos yet. Attach some, or tap Use these for a video with no stills.</p>
+            <p className="photo-picked-empty">
+              {recreating
+                ? "No photos yet. Attach some, or tap Recreate to keep the same pictures."
+                : "No photos yet. Attach some, or tap Use these for a video with no stills."}
+            </p>
           )}
           {picking ? (
             <div className="photo-picked">
@@ -552,8 +677,12 @@ export default function AgentView() {
               ) : (
                 <p className="photo-picked-empty">No photos selected yet</p>
               )}
-              <button className="photo-use" type="button" onClick={() => void usePickedPhotos()}>
-                Use these
+              <button
+                className="photo-use"
+                type="button"
+                onClick={() => (recreating ? void onSend(draft || "recreate this") : void usePickedPhotos())}
+              >
+                {recreating ? "Recreate" : "Use these"}
               </button>
             </div>
           ) : null}
@@ -640,7 +769,13 @@ export default function AgentView() {
       </div>
 
       <div className="chat-dock">
-        {memory.waitingForApproval && !busy && !memory.awaitingVideoRefs ? (
+        {recreating ? (
+          <div className="chat-approve">
+            <button type="button" onClick={() => void onSend(draft || "recreate this")}>
+              Recreate
+            </button>
+          </div>
+        ) : memory.waitingForApproval && !busy && !memory.awaitingVideoRefs ? (
           <div className="chat-approve">
             <button type="button" onClick={() => void onSend("continue")}>
               Continue
@@ -670,11 +805,11 @@ export default function AgentView() {
             ref={inputRef}
             rows={1}
             value={draft}
-            placeholder={picking ? "Tap photos above, or add another" : "Ask anything"}
+            placeholder={recreating ? "What should I change?" : picking ? "Tap photos above, or add another" : "Ask anything"}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKey}
           />
-          <button className="composer-send" type="button" disabled={busy || (!draft.trim() && pending.length === 0)} onClick={() => void onSend()}>
+          <button className="composer-send" type="button" disabled={busy || (!draft.trim() && pending.length === 0 && !memory.awaitingRecreate)} onClick={() => void onSend()}>
             {busy ? "…" : "Send"}
           </button>
         </div>

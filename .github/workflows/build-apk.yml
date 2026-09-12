@@ -24,10 +24,10 @@ jobs:
       - run: npx cap add android
       - run: npx cap sync android
       - run: node scripts/patch-android.mjs
-      - name: Build debug APK
+      - name: Build release APK
         working-directory: android
-        run: chmod +x gradlew && ./gradlew assembleDebug
+        run: chmod +x gradlew && ./gradlew assembleRelease
       - uses: actions/upload-artifact@v4
         with:
-          name: seedream-agent-debug-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          name: ai-story-release-apk
+          path: android/app/build/outputs/apk/release/*.apk

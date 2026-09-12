@@ -5,6 +5,7 @@ import AgentView from "./AgentView";
 export default function App() {
   const [health, setHealth] = useState<Health>({ ok: false, configured: false, grok: false, native: false });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [chatsOpen, setChatsOpen] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
   const [grokDraft, setGrokDraft] = useState("");
 
@@ -22,8 +23,13 @@ export default function App() {
   return (
     <div className="app app-chat">
       <header className="top chat-header">
-        <div>
-          <div className="brand">Seedream Agent</div>
+        <div className="top-left">
+          <button className="icon-btn" type="button" aria-label="Chats" onClick={() => setChatsOpen((open) => !open)}>
+            <ChatsIcon />
+          </button>
+          <div>
+            <div className="brand">AI Story</div>
+          </div>
         </div>
         <div className="top-actions">
           <span className={`status ${health.configured ? "on" : "off"}`}>
@@ -37,7 +43,7 @@ export default function App() {
       </header>
 
       <div className="scroll chat-mode">
-        <AgentView />
+        <AgentView chatsOpen={chatsOpen} onChatsOpenChange={setChatsOpen} />
       </div>
 
       {settingsOpen && (
@@ -92,6 +98,14 @@ export default function App() {
         </div>
       )}
     </div>
+  );
+}
+
+function ChatsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M4 6h16M4 12h16M4 18h10" strokeLinecap="round" />
+    </svg>
   );
 }
 

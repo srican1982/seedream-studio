@@ -139,6 +139,9 @@ export type AgentMemory = {
   lastStill: LocalImage | null;
   waitingForApproval: boolean;
   awaitingVideoRefs: boolean;
+  awaitingRecreate: boolean;
+  recreateShotId: string;
+  recreateNote: string;
   hasPickedVideoRefs: boolean;
   messages: AgentMessage[];
 };
@@ -156,6 +159,9 @@ export function emptyAgentMemory(): AgentMemory {
     lastStill: null,
     waitingForApproval: false,
     awaitingVideoRefs: false,
+    awaitingRecreate: false,
+    recreateShotId: "",
+    recreateNote: "",
     hasPickedVideoRefs: false,
     messages: [],
   };
@@ -205,6 +211,9 @@ function parseStoredMemory(parsed: AgentMemory): AgentMemory {
     lastStill: parsed.lastStill || null,
     waitingForApproval: Boolean(parsed.waitingForApproval),
     awaitingVideoRefs: Boolean(parsed.awaitingVideoRefs),
+    awaitingRecreate: Boolean(parsed.awaitingRecreate),
+    recreateShotId: parsed.recreateShotId || "",
+    recreateNote: parsed.recreateNote || "",
     hasPickedVideoRefs: Boolean(parsed.hasPickedVideoRefs),
     messages: Array.isArray(parsed.messages) ? parsed.messages : [],
   };
@@ -524,6 +533,10 @@ export function lastActionableShot(memory: AgentMemory) {
 }
 
 export function recreateShot(memory: AgentMemory, text: string) {
+  if (memory.recreateShotId) {
+    const current = memory.shots.find((item) => item.id === memory.recreateShotId);
+    if (current) return current;
+  }
   const numbered = text.match(/\b(?:shot|still|clip|image|part|number|#)?\s*(\d+)\b/i);
   if (numbered) {
     const index = Number(numbered[1]) - 1;
@@ -531,6 +544,103 @@ export function recreateShot(memory: AgentMemory, text: string) {
     if (shot) return shot;
   }
   return lastActionableShot(memory);
+}
+
+export function recreateChangeText(text: string) {
+  return text
+    .replace(/^\s*(please\s+)?(recreate(\s+this(\s+(one|part|clip|shot|video|still))?)?|redo|retry|remake|again)\s*[,.:;\-–—]?\s*/i, "")
+    .replace(/ආයෙ(\s+හදන්න)?|නැවත(\s+හදන්න)?/g, "")
+    .trim();
+}
+
+export function recreateRefLimit(kind: AgentShotKind) {
+  return kind === "image" ? 3 : VIDEO_REF_LIMIT;
+}
+
+export function recreateQuestion(kind: AgentShotKind) {
+  return kind === "video"
+    ? "What should I change in this video? Type it below. If you want different pictures, tap them in order on the bar, or attach new ones. Then tap Recreate."
+    : "What should I change in this still? Type it below. Tap different photos on the bar if you want, then tap Recreate.";
+}
+
+export function beginRecreate(memory: AgentMemory, shot: AgentShot, note = ""): AgentMemory {
+  const refs = refsForShot(memory, shot);
+  return {
+    ...memory,
+    awaitingRecreate: true,
+    recreateShotId: shot.id,
+    recreateNote: note,
+    awaitingVideoRefs: false,
+    waitingForApproval: false,
+    hasPickedVideoRefs: false,
+    chosenRefs: refs.slice(0, recreateRefLimit(shot.kind)),
+  };
+}
+
+const REVISE_SYSTEM = `You revise a prompt for Qwen 3.0 Pro (images) or Wan (video). Keep the whole scene the same except the user's requested change.
+Return only the revised prompt. No title, no quotes, no markdown, no explanation.
+If they typed spoken dialog in Sinhala letters, those spoken words must stay in those exact Sinhala letters. Do not romanize.
+Scene and action stay in clear English unless they asked otherwise.`;
+
+export async function applyRecreateEdits(
+  memory: AgentMemory,
+  change: string,
+  extraPhotos: LocalImage[] = []
+): Promise<{ memory: AgentMemory; shot: AgentShot }> {
+  const target = recreateShot(memory, change);
+  if (!target) throw new Error("Nothing to recreate yet.");
+  const limit = recreateRefLimit(target.kind);
+  const picked = [...memory.chosenRefs];
+  for (const img of extraPhotos) {
+    if (isUsableReferenceImage(img.dataUri) && !picked.some((item) => item.id === img.id)) picked.push(img);
+  }
+  const photos = picked.filter((img) => isUsableReferenceImage(img.dataUri)).slice(0, limit);
+  const note = recreateChangeText(change) || memory.recreateNote.trim();
+  let prompt = target.prompt;
+  if (note) {
+    try {
+      const raw = await completeChat(
+        REVISE_SYSTEM,
+        `Current prompt:\n${target.prompt}\n\nUser change:\n${note}`,
+        2048,
+        loadBrainModel(),
+        0.3
+      );
+      const cleaned = raw.replace(/^```(?:\w+)?\s*/i, "").replace(/\s*```$/i, "").replace(/^["']|["']$/g, "").trim();
+      if (cleaned) prompt = cleaned;
+    } catch {
+      prompt = `${target.prompt}\n\nChange this: ${note}`;
+    }
+    prompt = keepSinhalaDialog(prompt, note);
+  }
+  const reset = resetShot(memory, target.id);
+  const next: AgentMemory = {
+    ...reset,
+    brief: note || reset.brief,
+    awaitingRecreate: false,
+    recreateShotId: "",
+    recreateNote: "",
+    awaitingVideoRefs: false,
+    waitingForApproval: false,
+    chosenRefs: photos,
+    userRefs: photos,
+    hasPickedVideoRefs: true,
+    shots: reset.shots.map((item) =>
+      item.id === target.id
+        ? {
+            ...item,
+            prompt,
+            refSource: "user" as const,
+            identityRefIds: [],
+            poseRefIds: [],
+            poseFromSecond: false,
+          }
+        : item
+    ),
+  };
+  const shot = next.shots.find((item) => item.id === target.id);
+  if (!shot) throw new Error("Nothing to recreate yet.");
+  return { memory: next, shot };
 }
 
 function askedSeconds(text: string) {
