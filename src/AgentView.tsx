@@ -3,14 +3,18 @@ import {
   VIDEO_REF_LIMIT,
   askedForVideo,
   approvalText,
+  activeChatId,
+  deleteAgentChat,
   describePlan,
   emptyAgentMemory,
   isContinue,
   isRecreate,
   isRememberOnly,
   lastActionableShot,
+  listAgentChats,
   loadAgentMemory,
   nextPendingShot,
+  openAgentChat,
   photoLibrary,
   planAgentJob,
   recreateShot,
@@ -19,7 +23,9 @@ import {
   resultToStill,
   runAgentShot,
   saveAgentMemory,
+  startNewAgentChat,
   videoRefQuestion,
+  type AgentChatInfo,
   type AgentMemory,
   type AgentMessage,
   type AgentShot,
@@ -32,6 +38,8 @@ import type { LocalImage, StudioResult } from "./types";
 
 export default function AgentView() {
   const [memory, setMemory] = useState<AgentMemory>(emptyAgentMemory);
+  const [chats, setChats] = useState<AgentChatInfo[]>([]);
+  const [chatId, setChatId] = useState("");
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<LocalImage[]>([]);
   const [busy, setBusy] = useState(false);
@@ -45,6 +53,8 @@ export default function AgentView() {
 
   useEffect(() => {
     setMemory(loadAgentMemory());
+    setChats(listAgentChats());
+    setChatId(activeChatId());
   }, []);
 
   useEffect(() => {
@@ -52,10 +62,24 @@ export default function AgentView() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [memory.messages.length, progress, busy]);
 
+  function refreshChats() {
+    setChats(listAgentChats());
+    setChatId(activeChatId());
+  }
+
+  function showChat(next: AgentMemory) {
+    memoryRef.current = next;
+    setMemory(next);
+    setDraft("");
+    setPending([]);
+    refreshChats();
+  }
+
   function commit(next: AgentMemory) {
     memoryRef.current = next;
     setMemory(next);
     saveAgentMemory(next);
+    refreshChats();
   }
 
   function pushMessage(next: AgentMemory, message: AgentMessage) {
@@ -394,15 +418,40 @@ export default function AgentView() {
         <button
           className="link"
           type="button"
+          disabled={busy}
           onClick={() => {
-            commit(emptyAgentMemory());
-            setDraft("");
-            setPending([]);
+            showChat(startNewAgentChat(memoryRef.current));
           }}
         >
           New chat
         </button>
       </div>
+
+      {chats.length > 1 || chats[0]?.title !== "New chat" || memory.messages.length ? (
+        <div className="chat-list" role="list">
+          {chats.map((chat) => (
+            <div key={chat.id} className={`chat-pill${chat.id === chatId ? " on" : ""}`} role="listitem">
+              <button
+                type="button"
+                className="chat-pill-open"
+                disabled={busy || chat.id === chatId}
+                onClick={() => showChat(openAgentChat(chat.id, memoryRef.current))}
+              >
+                {chat.title}
+              </button>
+              <button
+                type="button"
+                className="chat-pill-del"
+                disabled={busy}
+                aria-label={`Delete ${chat.title}`}
+                onClick={() => showChat(deleteAgentChat(chat.id, memoryRef.current))}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {library.length || picking ? (
         <div className={`photo-tray${picking ? " picking" : ""}`}>

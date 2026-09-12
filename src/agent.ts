@@ -8,6 +8,11 @@ import type { Aspect, ImageTabId, LocalImage, StudioResult, TabState, VideoTabId
 type VideoResolution = "480p" | "720p" | "1080p";
 
 const MEMORY_KEY = "seedream_agent_memory";
+const CHATS_KEY = "seedream_agent_chats";
+
+function chatMemoryKey(id: string) {
+  return `seedream_agent_chat_${id}`;
+}
 
 export type AgentShotKind = "image" | "video";
 
@@ -156,50 +161,189 @@ export function emptyAgentMemory(): AgentMemory {
   };
 }
 
-export function loadAgentMemory(): AgentMemory {
+export type AgentChatInfo = {
+  id: string;
+  title: string;
+  updatedAt: number;
+};
+
+type ChatIndex = {
+  activeId: string;
+  chats: AgentChatInfo[];
+};
+
+export function chatTitleFromMemory(memory: AgentMemory) {
+  const first = memory.messages.find((item) => item.role === "user" && item.text.trim());
+  if (!first) return "New chat";
+  const text = first.text.replace(/\s+/g, " ").trim();
+  return text.length > 42 ? `${text.slice(0, 42)}…` : text;
+}
+
+function parseStoredMemory(parsed: AgentMemory): AgentMemory {
+  const images = Array.isArray(parsed.images) ? parsed.images : [];
+  return {
+    brief: parsed.brief || "",
+    notes: parsed.notes || "",
+    lock: parsed.lock || null,
+    images,
+    userRefs: Array.isArray(parsed.userRefs) && parsed.userRefs.length ? parsed.userRefs : images,
+    createdStills: Array.isArray(parsed.createdStills) ? parsed.createdStills : [],
+    chosenRefs: Array.isArray(parsed.chosenRefs) ? parsed.chosenRefs : [],
+    shots: Array.isArray(parsed.shots)
+      ? parsed.shots.map((shot) => ({
+          ...shot,
+          resolution: "480p" as const,
+          model: shot.kind === "image" ? "qwen-3-pro" : isVideoTab(String(shot.model)) ? shot.model : "wan-3-prime",
+          refSource: shot.refSource || (shot.kind === "video" ? "created" : "user"),
+          useLastFrame: Boolean(shot.useLastFrame),
+          frameStillIds: Array.isArray(shot.frameStillIds) ? shot.frameStillIds : [],
+          identityRefIds: Array.isArray(shot.identityRefIds) ? shot.identityRefIds : [],
+          poseRefIds: Array.isArray(shot.poseRefIds) ? shot.poseRefIds : [],
+          poseFromSecond: Boolean(shot.poseFromSecond),
+        }))
+      : [],
+    lastStill: parsed.lastStill || null,
+    waitingForApproval: Boolean(parsed.waitingForApproval),
+    awaitingVideoRefs: Boolean(parsed.awaitingVideoRefs),
+    hasPickedVideoRefs: Boolean(parsed.hasPickedVideoRefs),
+    messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+  };
+}
+
+function readChatMemory(id: string): AgentMemory | null {
   try {
-    const raw = localStorage.getItem(MEMORY_KEY);
-    if (!raw) return emptyAgentMemory();
-    const parsed = JSON.parse(raw) as AgentMemory;
-    const images = Array.isArray(parsed.images) ? parsed.images : [];
-    return {
-      brief: parsed.brief || "",
-      notes: parsed.notes || "",
-      lock: parsed.lock || null,
-      images,
-      userRefs: Array.isArray(parsed.userRefs) && parsed.userRefs.length ? parsed.userRefs : images,
-      createdStills: Array.isArray(parsed.createdStills) ? parsed.createdStills : [],
-      chosenRefs: Array.isArray(parsed.chosenRefs) ? parsed.chosenRefs : [],
-      shots: Array.isArray(parsed.shots)
-        ? parsed.shots.map((shot) => ({
-            ...shot,
-            resolution: "480p",
-            model: shot.kind === "image" ? "qwen-3-pro" : isVideoTab(String(shot.model)) ? shot.model : "wan-3-prime",
-            refSource: shot.refSource || (shot.kind === "video" ? "created" : "user"),
-            useLastFrame: Boolean(shot.useLastFrame),
-            frameStillIds: Array.isArray(shot.frameStillIds) ? shot.frameStillIds : [],
-            identityRefIds: Array.isArray(shot.identityRefIds) ? shot.identityRefIds : [],
-            poseRefIds: Array.isArray(shot.poseRefIds) ? shot.poseRefIds : [],
-            poseFromSecond: Boolean(shot.poseFromSecond),
-          }))
-        : [],
-      lastStill: parsed.lastStill || null,
-      waitingForApproval: Boolean(parsed.waitingForApproval),
-      awaitingVideoRefs: Boolean(parsed.awaitingVideoRefs),
-      hasPickedVideoRefs: Boolean(parsed.hasPickedVideoRefs),
-      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
-    };
+    const raw = localStorage.getItem(chatMemoryKey(id));
+    if (!raw) return null;
+    return parseStoredMemory(JSON.parse(raw) as AgentMemory);
   } catch {
-    return emptyAgentMemory();
+    return null;
   }
 }
 
-export function saveAgentMemory(memory: AgentMemory) {
+function writeChatMemory(id: string, memory: AgentMemory) {
   try {
-    localStorage.setItem(MEMORY_KEY, JSON.stringify(memory));
+    localStorage.setItem(chatMemoryKey(id), JSON.stringify(memory));
   } catch {
     /* quota — keep RAM only */
   }
+}
+
+function readChatIndex(): ChatIndex | null {
+  try {
+    const raw = localStorage.getItem(CHATS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ChatIndex;
+    if (!parsed.activeId || !Array.isArray(parsed.chats) || !parsed.chats.length) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeChatIndex(index: ChatIndex) {
+  try {
+    localStorage.setItem(CHATS_KEY, JSON.stringify(index));
+  } catch {
+    /* quota */
+  }
+}
+
+function createFreshIndex(): ChatIndex {
+  const id = uuid();
+  const index: ChatIndex = { activeId: id, chats: [{ id, title: "New chat", updatedAt: Date.now() }] };
+  writeChatMemory(id, emptyAgentMemory());
+  writeChatIndex(index);
+  return index;
+}
+
+function migrateLegacyChat(): ChatIndex | null {
+  try {
+    const raw = localStorage.getItem(MEMORY_KEY);
+    if (!raw) return null;
+    const memory = parseStoredMemory(JSON.parse(raw) as AgentMemory);
+    const id = uuid();
+    const index: ChatIndex = {
+      activeId: id,
+      chats: [{ id, title: chatTitleFromMemory(memory), updatedAt: Date.now() }],
+    };
+    writeChatMemory(id, memory);
+    writeChatIndex(index);
+    localStorage.removeItem(MEMORY_KEY);
+    return index;
+  } catch {
+    return null;
+  }
+}
+
+function loadChatIndex(): ChatIndex {
+  return readChatIndex() || migrateLegacyChat() || createFreshIndex();
+}
+
+export function listAgentChats() {
+  return loadChatIndex().chats.slice().sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export function activeChatId() {
+  return loadChatIndex().activeId;
+}
+
+export function loadAgentMemory(): AgentMemory {
+  const index = loadChatIndex();
+  return readChatMemory(index.activeId) || emptyAgentMemory();
+}
+
+export function saveAgentMemory(memory: AgentMemory) {
+  const index = loadChatIndex();
+  writeChatMemory(index.activeId, memory);
+  writeChatIndex({
+    ...index,
+    chats: index.chats.map((chat) =>
+      chat.id === index.activeId
+        ? { ...chat, title: chatTitleFromMemory(memory), updatedAt: Date.now() }
+        : chat
+    ),
+  });
+}
+
+export function startNewAgentChat(current: AgentMemory) {
+  if (!current.messages.length) return current;
+  saveAgentMemory(current);
+  const index = loadChatIndex();
+  const id = uuid();
+  const memory = emptyAgentMemory();
+  writeChatMemory(id, memory);
+  writeChatIndex({
+    activeId: id,
+    chats: [{ id, title: "New chat", updatedAt: Date.now() }, ...index.chats],
+  });
+  return memory;
+}
+
+export function openAgentChat(id: string, current: AgentMemory) {
+  const index = loadChatIndex();
+  if (id === index.activeId || !index.chats.some((chat) => chat.id === id)) return current;
+  saveAgentMemory(current);
+  writeChatIndex({ ...loadChatIndex(), activeId: id });
+  return readChatMemory(id) || emptyAgentMemory();
+}
+
+export function deleteAgentChat(id: string, current: AgentMemory) {
+  const index = loadChatIndex();
+  if (index.activeId !== id) saveAgentMemory(current);
+  try {
+    localStorage.removeItem(chatMemoryKey(id));
+  } catch {
+    /* ignore */
+  }
+  const chats = index.chats.filter((chat) => chat.id !== id);
+  if (!chats.length) {
+    const fresh = createFreshIndex();
+    return readChatMemory(fresh.activeId) || emptyAgentMemory();
+  }
+  const activeId = index.activeId === id ? chats.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0].id : index.activeId;
+  writeChatIndex({ activeId, chats });
+  if (activeId === index.activeId && index.activeId !== id) return current;
+  return readChatMemory(activeId) || emptyAgentMemory();
 }
 
 function isVideoTab(id: string): id is VideoTabId {

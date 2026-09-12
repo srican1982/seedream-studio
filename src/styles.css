@@ -504,6 +504,50 @@ code { color: var(--accent-2); }
   font-size: 0.78rem;
   font-weight: 650;
 }
+.chat-list {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 0 0 8px;
+  -webkit-overflow-scrolling: touch;
+}
+.chat-pill {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  max-width: 180px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #111218;
+  overflow: hidden;
+}
+.chat-pill.on {
+  border-color: var(--accent);
+  background: #2a1a24;
+}
+.chat-pill-open {
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 650;
+  padding: 7px 10px 7px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 148px;
+}
+.chat-pill-open:disabled { opacity: 1; }
+.chat-pill-del {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  width: 26px;
+  height: 28px;
+  font-size: 14px;
+  line-height: 1;
+}
+.chat-pill-del:disabled { opacity: 0.4; }
 .photo-tray {
   flex: 0 0 auto;
   padding: 0 0 8px;
