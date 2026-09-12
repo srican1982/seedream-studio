@@ -777,10 +777,60 @@ code { color: var(--accent-2); }
 }
 .bubble-photos, .bubble-media { display: grid; gap: 8px; margin-bottom: 8px; }
 .bubble-photos { grid-template-columns: repeat(auto-fill, minmax(72px, 1fr)); }
+.media-hit {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
 .bubble-photos img, .bubble-media img, .bubble-media video {
   width: 100%;
   border-radius: 10px;
   background: #000;
+  pointer-events: none;
+}
+.media-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+}
+.media-viewer-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+}
+.media-viewer-back {
+  border: 0;
+  background: #1c1d24;
+  color: #fff;
+  border-radius: 12px;
+  padding: 10px 16px;
+  font-weight: 700;
+}
+.media-viewer-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 8px 8px calc(12px + env(safe-area-inset-bottom, 0px));
+}
+.media-viewer-stage img,
+.media-viewer-stage video {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  background: #000;
+}
+.media-viewer-stage video {
+  width: 100%;
 }
 .chat-status { margin: 0; color: var(--muted); font-size: 0.78rem; }
 .chat-dock {
@@ -850,11 +900,14 @@ code { color: var(--accent-2); }
 }
 .composer textarea {
   min-height: 40px;
-  max-height: 120px;
+  max-height: 200px;
+  height: 40px;
+  overflow-y: auto;
   border: 0;
   background: transparent;
   resize: none;
   padding: 8px 0;
+  line-height: 1.4;
 }
 .composer-icon, .composer-send {
   border: 0;

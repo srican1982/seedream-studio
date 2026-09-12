@@ -368,8 +368,9 @@ function defaultVideoModel(): VideoTabId {
   return "wan-3-prime";
 }
 
-export function shotPrompt(_lock: AgentLock | null, notes: string, shot: AgentShot) {
+export function shotPrompt(_lock: AgentLock | null, notes: string, shot: AgentShot, brief = "") {
   let prompt = shot.poseFromSecond ? applyPoseIdentityLock(shot.prompt, shot.identityRefIds.length) : shot.prompt;
+  prompt = keepSinhalaDialog(prompt, brief);
   const remembered = notes.trim();
   if (!remembered) return prompt;
   return `${prompt}\nRemembered from the user: ${remembered}`;
@@ -393,6 +394,26 @@ function applyPoseIdentityLock(prompt: string, identityCount = 1) {
   return `${text}\n\n${poseIdentityLock(identityCount)}`;
 }
 
+const SINHALA = /[\u0D80-\u0DFF]/;
+
+function sinhalaDialogs(text: string) {
+  const quoted = [...text.matchAll(/[“"']([^“"']*[\u0D80-\u0DFF][^“"']*)[”"']/g)].map((m) => m[1].trim());
+  const runs = [...text.matchAll(/[\u0D80-\u0DFF][^\n]*/g)].map((m) => m[0].trim()).filter((item) => item.length >= 2);
+  const out: string[] = [];
+  for (const item of [...quoted, ...runs]) {
+    if (item && !out.some((kept) => kept.includes(item) || item.includes(kept))) out.push(item);
+  }
+  return out;
+}
+
+function keepSinhalaDialog(prompt: string, brief: string) {
+  const dialogs = sinhalaDialogs(brief);
+  if (!dialogs.length) return prompt;
+  const missing = dialogs.filter((line) => !prompt.includes(line));
+  if (!missing.length) return prompt;
+  return `${prompt.trim()}\n\nThe people must speak these exact Sinhala letters. Do not speak an English or romanized version of these lines:\n${missing.map((line) => `"${line}"`).join("\n")}`;
+}
+
 const PLAN_SYSTEM = `You are the same Gemini the user would talk to in a normal chat. Read their words and look at the attached photos. Understand the request the way you would if they messaged you directly.
 
 Language:
@@ -409,7 +430,8 @@ Then write the exact prompt that will be sent to Qwen 3.0 Pro (images) or Wan (v
 
 How to write shot.prompt:
 - First understand them the way you would in a normal Gemini chat: slang, Sinhala, shorthand, sex-position names, and what they mean by the attached photos.
-- Then convert that understanding into clear, explicit English for Qwen or Wan. If they name a position, act, or pose, describe the bodies: who is where, limbs, facing, contact, and the action. Qwen and Wan often do not know the name. You do. Write the picture.
+- Write the picture and motion in clear, explicit English so Qwen or Wan understand bodies, camera, and action. If they name a position, act, or pose, describe the bodies: who is where, limbs, facing, contact, and the action. Qwen and Wan often do not know the name. You do. Write the picture.
+- Spoken dialog is different. If they typed spoken lines in Sinhala letters (සිංහල), copy those exact Sinhala letters into shot.prompt as the words that are said. Do not translate that dialog into English. Do not romanize it into English letters (never write "mama" for මම). Scene description stays English. Only the spoken words they wrote in Sinhala stay in Sinhala.
 - Keep every concrete detail they said. Keep their adult wording. Be direct and sexual when they are.
 - Clothing, lighting, and location: if they named a change, follow that. If they did not, tell Qwen or Wan to keep the same clothes, same lighting, and same place as the first image (or the photo they pointed at). Do not invent a new room, new light, or new outfit.
 - Describing the act or position they asked for is not inventing. Changing the photo's clothes, light, or place without them asking is inventing.
@@ -434,7 +456,7 @@ How to write shot.prompt:
 - If they attached new photos and did not mention the created stills, refs is attached.
 - If they attached no new photos and asked for a video, refs is created — unless they already picked photos.
 - Qwen 3.0 Pro can only take 3 reference images. Wan can take 10. If there are more, keep the ones the user cares about most, usually new uploads first.
-- For video, describe the motion they asked in the same explicit way. Always include audible speech and scene sound in the prompt.
+- For video, describe the motion they asked in the same explicit way. Always include audible speech and scene sound in the prompt. If they wrote dialog in Sinhala letters, those spoken words in the prompt must stay in Sinhala letters.
 - Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. Video is always 480p. Duration is what they said, else 10s. Wan max 30s per clip.
 
 If they are only chatting, return shots: [] and put your answer in reply.
@@ -846,6 +868,9 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
         : "",
     memory.notes.trim() ? `Remembered facts from the user (do not add extra):\n${memory.notes.trim()}` : "",
     history ? `Recent chat:\n${history}` : "",
+    SINHALA.test(brief)
+      ? "The latest request has Sinhala letters. Any spoken dialog they typed in Sinhala must stay in those exact Sinhala letters in shot.prompt. Do not convert those spoken words to English letters."
+      : "",
     `Latest request:\n${brief}`,
   ]
     .filter(Boolean)
@@ -912,7 +937,10 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     const base = {
       kind,
       title: String(row.title || `${kind} ${shots.length + 1}`).trim(),
-      prompt: poseJob ? applyPoseIdentityLock(String(row.prompt || brief).trim() || brief, identity.length) : String(row.prompt || brief).trim() || brief,
+      prompt: keepSinhalaDialog(
+        poseJob ? applyPoseIdentityLock(String(row.prompt || brief).trim() || brief, identity.length) : String(row.prompt || brief).trim() || brief,
+        brief
+      ),
       duration: kind === "video" ? clipVideoDuration(model as VideoTabId, wanted) : 0,
       resolution,
       model,
@@ -935,7 +963,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
         makeShot({
           kind: "image",
           title: `Still ${imageShots.length + index + 1} · pose ${poseNum}`,
-          prompt: applyPoseIdentityLock(template?.prompt || brief, split.identity.length),
+          prompt: keepSinhalaDialog(applyPoseIdentityLock(template?.prompt || brief, split.identity.length), brief),
           duration: 0,
           resolution: "480p",
           model: defaultImageModel(),
@@ -963,7 +991,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
       const base = {
         kind,
         title: kind === "video" ? "Video" : poses.length > 1 ? `Still · pose ${poseNum}` : "Still",
-        prompt: poseJob ? applyPoseIdentityLock(brief, identity.length) : brief,
+        prompt: keepSinhalaDialog(poseJob ? applyPoseIdentityLock(brief, identity.length) : brief, brief),
         duration,
         resolution: "480p" as const,
         model,
@@ -1127,7 +1155,7 @@ export async function runAgentShot(
   const shot = memory.shots.find((item) => item.id === shotId);
   if (!shot) throw new Error("Shot missing.");
   const images = refsForShot(memory, shot);
-  const prompt = shotPrompt(memory.lock, memory.notes, shot);
+  const prompt = shotPrompt(memory.lock, memory.notes, shot, memory.brief);
   const state: TabState = {
     ...emptyTabState(shot.kind),
     images,

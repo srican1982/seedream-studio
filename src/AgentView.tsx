@@ -34,7 +34,12 @@ import {
 import { downloadResult } from "./api";
 import { fileToDataUri, uuid } from "./media";
 import { isNativeApp, pickGalleryImages } from "./native";
-import type { LocalImage, StudioResult } from "./types";
+import type { LocalImage, ResultKind, StudioResult } from "./types";
+
+const COMPOSER_MIN = 40;
+const COMPOSER_MAX = 200;
+
+type MediaViewer = { kind: ResultKind; url: string; alt: string };
 
 export default function AgentView() {
   const [memory, setMemory] = useState<AgentMemory>(emptyAgentMemory);
@@ -45,10 +50,12 @@ export default function AgentView() {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<MediaViewer | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const memoryRef = useRef(memory);
+  const viewerOpen = useRef(false);
   memoryRef.current = memory;
 
   useEffect(() => {
@@ -61,6 +68,49 @@ export default function AgentView() {
     const el = threadRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [memory.messages.length, progress, busy]);
+
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = `${COMPOSER_MIN}px`;
+    if (!draft) return;
+    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX)}px`;
+  }, [draft]);
+
+  function openMedia(next: MediaViewer) {
+    setViewer(next);
+    if (!viewerOpen.current) {
+      viewerOpen.current = true;
+      history.pushState({ mediaViewer: 1 }, "");
+    }
+  }
+
+  function closeMedia() {
+    setViewer(null);
+    if (viewerOpen.current && history.state && (history.state as { mediaViewer?: number }).mediaViewer) {
+      viewerOpen.current = false;
+      history.back();
+      return;
+    }
+    viewerOpen.current = false;
+  }
+
+  useEffect(() => {
+    function onPop() {
+      if (!viewerOpen.current) return;
+      viewerOpen.current = false;
+      setViewer(null);
+    }
+    function onKey(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape" && viewerOpen.current) closeMedia();
+    }
+    window.addEventListener("popstate", onPop);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("popstate", onPop);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
 
   function refreshChats() {
     setChats(listAgentChats());
@@ -522,18 +572,49 @@ export default function AgentView() {
               {message.images?.length ? (
                 <div className="bubble-photos">
                   {message.images.map((img) => (
-                    <img key={img.id} src={img.preview} alt={img.name} />
+                    <button
+                      key={img.id}
+                      type="button"
+                      className="media-hit"
+                      aria-label={`Open ${img.name || "photo"}`}
+                      onClick={() => openMedia({ kind: "image", url: img.preview || img.dataUri, alt: img.name })}
+                    >
+                      <img src={img.preview} alt={img.name} />
+                    </button>
                   ))}
                 </div>
               ) : null}
               {message.text ? <p>{message.text}</p> : null}
               {message.result ? (
                 <div className="bubble-media">
-                  {message.result.kind === "video" ? (
-                    <video src={message.result.url} controls playsInline />
-                  ) : (
-                    <img src={message.result.url} alt="Generated shot" />
-                  )}
+                  <div
+                    className="media-hit"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={message.result.kind === "video" ? "Open video" : "Open image"}
+                    onClick={() =>
+                      openMedia({
+                        kind: message.result!.kind,
+                        url: message.result!.url,
+                        alt: message.result!.kind === "video" ? "Generated video" : "Generated shot",
+                      })
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      openMedia({
+                        kind: message.result!.kind,
+                        url: message.result!.url,
+                        alt: message.result!.kind === "video" ? "Generated video" : "Generated shot",
+                      });
+                    }}
+                  >
+                    {message.result.kind === "video" ? (
+                      <video src={message.result.url} muted playsInline preload="metadata" />
+                    ) : (
+                      <img src={message.result.url} alt="Generated shot" />
+                    )}
+                  </div>
                   <div className="bubble-actions">
                     <button className="link" type="button" onClick={() => void useResult(message.result!)}>
                       Use in chat
@@ -598,6 +679,23 @@ export default function AgentView() {
           </button>
         </div>
       </div>
+
+      {viewer ? (
+        <div className="media-viewer" role="dialog" aria-modal="true" aria-label={viewer.kind === "video" ? "Video" : "Image"}>
+          <div className="media-viewer-bar">
+            <button type="button" className="media-viewer-back" onClick={() => closeMedia()}>
+              Back
+            </button>
+          </div>
+          <div className="media-viewer-stage">
+            {viewer.kind === "video" ? (
+              <video src={viewer.url} controls autoPlay playsInline />
+            ) : (
+              <img src={viewer.url} alt={viewer.alt} />
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
