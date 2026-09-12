@@ -81,12 +81,17 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
   }, [memory.messages.length, progress, busy]);
 
   useEffect(() => {
+    if (memory.awaitingRecreate) {
+      const el = inputRef.current;
+      if (el) el.style.height = "";
+      return;
+    }
     const el = inputRef.current;
     if (!el) return;
     el.style.height = `${COMPOSER_MIN}px`;
     if (!draft) return;
     el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX)}px`;
-  }, [draft]);
+  }, [draft, memory.awaitingRecreate]);
 
   function openMedia(next: MediaViewer) {
     setViewer(next);
@@ -233,6 +238,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       role: "assistant",
       text: `${done?.status === "done" ? "Done" : "Failed"}: ${shot.title}\n\n${approvalText(current, done || shot)}`,
       result: done?.result,
+      shotId: shot.id,
       createdAt: Date.now(),
     });
     commit(current);
@@ -273,8 +279,8 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     commit({ ...current, chosenRefs: current.chosenRefs.filter((img) => img.id !== id) });
   }
 
-  function askToRecreate(current: AgentMemory, text = "") {
-    const target = recreateShot(current, text);
+  function askToRecreate(current: AgentMemory, text = "", shot?: AgentShot | null) {
+    const target = shot || recreateShot(current, text);
     if (!target) {
       commit(pushMessage(current, { id: uuid(), role: "assistant", text: "Nothing to recreate yet.", createdAt: Date.now() }));
       return;
@@ -287,7 +293,18 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         createdAt: Date.now(),
       })
     );
+    setDraft("");
     inputRef.current?.focus();
+  }
+
+  function recreateFromMessage(message: AgentMessage) {
+    if (busy) return;
+    const current = memoryRef.current;
+    const shot =
+      (message.shotId && current.shots.find((item) => item.id === message.shotId)) ||
+      current.shots.find((item) => item.result && message.result && item.result.url === message.result.url) ||
+      null;
+    askToRecreate(current, "", shot);
   }
 
   async function finishRecreate(current: AgentMemory, text: string, extra: LocalImage[]) {
@@ -745,6 +762,9 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                     )}
                   </div>
                   <div className="bubble-actions">
+                    <button className="link" type="button" disabled={busy} onClick={() => recreateFromMessage(message)}>
+                      Recreate
+                    </button>
                     <button className="link" type="button" onClick={() => void useResult(message.result!)}>
                       Use in chat
                     </button>
@@ -770,10 +790,25 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
 
       <div className="chat-dock">
         {recreating ? (
-          <div className="chat-approve">
-            <button type="button" onClick={() => void onSend(draft || "recreate this")}>
-              Recreate
-            </button>
+          <div className="recreate-box">
+            <label htmlFor="recreate-change">What should I change?</label>
+            <textarea
+              id="recreate-change"
+              ref={inputRef}
+              rows={3}
+              value={draft}
+              placeholder={recreateKind === "image" ? "Type the picture change, or leave empty" : "Type the video change, or leave empty"}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={onKey}
+            />
+            <div className="recreate-box-actions">
+              <button className="ghost-btn" type="button" onClick={() => void pickPhotos()}>
+                Change photos
+              </button>
+              <button type="button" onClick={() => void onSend(draft || "recreate this")}>
+                Recreate
+              </button>
+            </div>
           </div>
         ) : memory.waitingForApproval && !busy && !memory.awaitingVideoRefs ? (
           <div className="chat-approve">
@@ -797,22 +832,24 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
             ))}
           </div>
         ) : null}
-        <div className="composer">
-          <button className="composer-icon" type="button" onClick={() => void pickPhotos()} aria-label="Add photo">
-            +
-          </button>
-          <textarea
-            ref={inputRef}
-            rows={1}
-            value={draft}
-            placeholder={recreating ? "What should I change?" : picking ? "Tap photos above, or add another" : "Ask anything"}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={onKey}
-          />
-          <button className="composer-send" type="button" disabled={busy || (!draft.trim() && pending.length === 0 && !memory.awaitingRecreate)} onClick={() => void onSend()}>
-            {busy ? "…" : "Send"}
-          </button>
-        </div>
+        {recreating ? null : (
+          <div className="composer">
+            <button className="composer-icon" type="button" onClick={() => void pickPhotos()} aria-label="Add photo">
+              +
+            </button>
+            <textarea
+              ref={inputRef}
+              rows={1}
+              value={draft}
+              placeholder={picking ? "Tap photos above, or add another" : "Ask anything"}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={onKey}
+            />
+            <button className="composer-send" type="button" disabled={busy || (!draft.trim() && pending.length === 0)} onClick={() => void onSend()}>
+              {busy ? "…" : "Send"}
+            </button>
+          </div>
+        )}
       </div>
 
       {viewer ? (

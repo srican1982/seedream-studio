@@ -51,6 +51,7 @@ export type AgentMessage = {
   text: string;
   images?: LocalImage[];
   result?: StudioResult;
+  shotId?: string;
   createdAt: number;
 };
 
@@ -559,8 +560,8 @@ export function recreateRefLimit(kind: AgentShotKind) {
 
 export function recreateQuestion(kind: AgentShotKind) {
   return kind === "video"
-    ? "What should I change in this video? Type it below. If you want different pictures, tap them in order on the bar, or attach new ones. Then tap Recreate."
-    : "What should I change in this still? Type it below. Tap different photos on the bar if you want, then tap Recreate.";
+    ? "What should I change in this video? Type it in the box below if you want. You can leave it empty to remake the same clip. Tap different pictures on the bar if you want those too. Then tap Recreate."
+    : "What should I change in this picture? Type it in the box below if you want. You can leave it empty to remake the same still. Tap different photos on the bar if you want those too. Then tap Recreate.";
 }
 
 export function beginRecreate(memory: AgentMemory, shot: AgentShot, note = ""): AgentMemory {

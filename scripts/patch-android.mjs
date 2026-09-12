@@ -11,7 +11,6 @@ const stylesPath = path.join(androidApp, "res", "values", "styles.xml");
 const stylesV35Dir = path.join(androidApp, "res", "values-v35");
 const colorsPath = path.join(androidApp, "res", "values", "ic_launcher_background.xml");
 const gradlePath = path.join(androidRoot, "app", "build.gradle");
-const icon = path.join(native, "ic_launcher.png");
 
 const permissions = [
   '    <uses-permission android:name="android.permission.INTERNET" />',
@@ -51,11 +50,12 @@ try {
 }
 
 for (const density of ["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"]) {
+  const from = path.join(native, `mipmap-${density}`);
   const dir = path.join(androidApp, "res", `mipmap-${density}`);
   await mkdir(dir, { recursive: true });
-  await copyFile(icon, path.join(dir, "ic_launcher.png"));
-  await copyFile(icon, path.join(dir, "ic_launcher_round.png"));
-  await copyFile(icon, path.join(dir, "ic_launcher_foreground.png"));
+  for (const name of ["ic_launcher.png", "ic_launcher_round.png", "ic_launcher_foreground.png"]) {
+    await copyFile(path.join(from, name), path.join(dir, name));
+  }
 }
 
 const anyDpi = path.join(androidApp, "res", "mipmap-anydpi-v26");

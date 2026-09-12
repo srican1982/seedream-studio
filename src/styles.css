@@ -986,6 +986,47 @@ code { color: var(--accent-2); }
   background: var(--accent);
   border-color: var(--accent);
 }
+.recreate-box {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  border-radius: 16px;
+  background: #1a1218;
+}
+.recreate-box label {
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.recreate-box textarea {
+  min-height: 72px;
+  max-height: 200px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #111218;
+  padding: 10px 12px;
+  resize: none;
+  line-height: 1.4;
+}
+.recreate-box-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.recreate-box-actions button {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 11px 12px;
+  font-weight: 700;
+  background: #111218;
+  color: #fff;
+}
+.recreate-box-actions button:last-child {
+  border-color: var(--accent);
+  background: var(--accent);
+}
 .chat-pending { display: flex; gap: 8px; padding-bottom: 8px; }
 .chat-pending-thumb { position: relative; width: 48px; height: 48px; }
 .chat-pending-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }
