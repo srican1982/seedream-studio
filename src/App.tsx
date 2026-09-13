@@ -20,6 +20,29 @@ export default function App() {
     setGrokDraft(hasLocalOpenRouterKey() ? "••••••••••••" : "");
   }, []);
 
+  useEffect(() => {
+    const root = document.documentElement;
+    const sync = () => {
+      const vv = window.visualViewport;
+      const covered = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
+      root.style.setProperty("--kb", `${Math.round(covered)}px`);
+      document.body.classList.toggle("kb-open", covered > 80);
+    };
+    sync();
+    window.visualViewport?.addEventListener("resize", sync);
+    window.visualViewport?.addEventListener("scroll", sync);
+    window.addEventListener("resize", sync);
+    window.addEventListener("focusin", sync);
+    return () => {
+      window.visualViewport?.removeEventListener("resize", sync);
+      window.visualViewport?.removeEventListener("scroll", sync);
+      window.removeEventListener("resize", sync);
+      window.removeEventListener("focusin", sync);
+      root.style.removeProperty("--kb");
+      document.body.classList.remove("kb-open");
+    };
+  }, []);
+
   return (
     <div className="app app-chat">
       <header className="top chat-header">

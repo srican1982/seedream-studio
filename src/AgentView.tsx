@@ -70,9 +70,17 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
   chatsOpenRef.current = chatsOpen;
 
   useEffect(() => {
-    setMemory(loadAgentMemory());
-    setChats(listAgentChats());
-    setChatId(activeChatId());
+    let alive = true;
+    void loadAgentMemory().then((next) => {
+      if (!alive) return;
+      memoryRef.current = next;
+      setMemory(next);
+      setChats(listAgentChats());
+      setChatId(activeChatId());
+    });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -81,16 +89,21 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
   }, [memory.messages.length, progress, busy]);
 
   useEffect(() => {
-    if (memory.awaitingRecreate) {
-      const el = inputRef.current;
-      if (el) el.style.height = "";
-      return;
-    }
     const el = inputRef.current;
     if (!el) return;
+    if (memory.awaitingRecreate) {
+      el.style.height = "";
+      el.scrollTop = el.scrollHeight;
+      return;
+    }
+    const room = window.visualViewport ? Math.floor(window.visualViewport.height * 0.32) : COMPOSER_MAX;
+    const maxH = Math.max(COMPOSER_MIN, Math.min(COMPOSER_MAX, room));
     el.style.height = `${COMPOSER_MIN}px`;
-    if (!draft) return;
-    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX)}px`;
+    if (draft) el.style.height = `${Math.min(el.scrollHeight, maxH)}px`;
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ block: "end", inline: "nearest" });
+    });
   }, [draft, memory.awaitingRecreate]);
 
   function openMedia(next: MediaViewer) {
@@ -585,7 +598,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
           type="button"
           disabled={busy}
           onClick={() => {
-            showChat(startNewAgentChat(memoryRef.current));
+            void startNewAgentChat(memoryRef.current).then((next) => showChat(next));
           }}
         >
           New chat
@@ -606,7 +619,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
               className="chats-new"
               type="button"
               disabled={busy}
-              onClick={() => showChat(startNewAgentChat(memoryRef.current))}
+              onClick={() => void startNewAgentChat(memoryRef.current).then((next) => showChat(next))}
             >
               New chat
             </button>
@@ -618,7 +631,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                       type="button"
                       className="chats-item-open"
                       disabled={busy || chat.id === chatId}
-                      onClick={() => showChat(openAgentChat(chat.id, memoryRef.current))}
+                      onClick={() => void openAgentChat(chat.id, memoryRef.current).then((next) => showChat(next))}
                     >
                       {chat.title}
                     </button>
@@ -627,7 +640,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                       className="chats-item-del"
                       disabled={busy}
                       aria-label={`Delete ${chat.title}`}
-                      onClick={() => showChat(deleteAgentChat(chat.id, memoryRef.current), true)}
+                      onClick={() => void deleteAgentChat(chat.id, memoryRef.current).then((next) => showChat(next, true))}
                     >
                       ×
                     </button>

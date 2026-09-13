@@ -31,9 +31,14 @@ const missing = permissions.filter((line) => {
 });
 if (missing.length) {
   xml = xml.replace(/<manifest\b[^>]*>/, (open) => `${open}\n${missing.join("\n")}`);
-  await writeFile(manifestPath, xml);
-  console.log(`Added ${missing.length} Android permissions`);
 }
+if (xml.includes("android:windowSoftInputMode")) {
+  xml = xml.replace(/android:windowSoftInputMode="[^"]*"/, 'android:windowSoftInputMode="adjustResize"');
+} else {
+  xml = xml.replace(/<activity\b/, '<activity android:windowSoftInputMode="adjustResize"');
+}
+await writeFile(manifestPath, xml);
+if (missing.length) console.log(`Added ${missing.length} Android permissions`);
 
 try {
   let styles = await readFile(stylesPath, "utf8");

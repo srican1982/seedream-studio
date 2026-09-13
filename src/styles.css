@@ -41,6 +41,7 @@ button { cursor: pointer; }
   height: 100%;
   margin: 0 auto;
   padding: 12px 16px 0;
+  padding-bottom: var(--kb, 0px);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -944,6 +945,12 @@ code { color: var(--accent-2); }
   padding: 8px 0 calc(10px + env(safe-area-inset-bottom, 0px));
   background: var(--bg);
   border-top: 1px solid var(--line);
+}
+body.kb-open .chat-dock {
+  padding-bottom: 8px;
+}
+body.kb-open .composer textarea {
+  max-height: min(200px, 28vh);
 }
 .chat-chips {
   display: flex;

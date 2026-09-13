@@ -1,5 +1,6 @@
 import { CapacitorHttp } from "@capacitor/core";
 import { brainFromText, completeChat, generateImage, generateVideo, loadBrainModel, saveBrainModel, type ChatContentPart } from "./api";
+import { cacheChat, cachedChat, dropCachedChat, idbDeleteChat, idbReadChat, idbWriteChat, readLocalChat, writeLocalChat } from "./chat-store";
 import { blobToJpegDataUri, isUsableReferenceImage, uuid } from "./media";
 import { AGENT_VIDEO_TABS, emptyTabState, findImage, findVideo } from "./models";
 import { isNativeApp, localFileToDataUri } from "./native";
@@ -220,22 +221,46 @@ function parseStoredMemory(parsed: AgentMemory): AgentMemory {
   };
 }
 
-function readChatMemory(id: string): AgentMemory | null {
+function parseMaybeMemory(raw: unknown): AgentMemory | null {
+  if (!raw || typeof raw !== "object") return null;
   try {
-    const raw = localStorage.getItem(chatMemoryKey(id));
-    if (!raw) return null;
-    return parseStoredMemory(JSON.parse(raw) as AgentMemory);
+    return parseStoredMemory(raw as AgentMemory);
   } catch {
     return null;
   }
 }
 
-function writeChatMemory(id: string, memory: AgentMemory) {
-  try {
-    localStorage.setItem(chatMemoryKey(id), JSON.stringify(memory));
-  } catch {
-    /* quota — keep RAM only */
+function readLocalMemory(id: string): AgentMemory | null {
+  return parseMaybeMemory(readLocalChat(id, chatMemoryKey(id)));
+}
+
+async function readChatMemory(id: string): Promise<AgentMemory | null> {
+  const cached = cachedChat(id);
+  if (cached) return parseMaybeMemory(cached);
+  const fromIdb = parseMaybeMemory(await idbReadChat(id));
+  if (fromIdb) {
+    cacheChat(id, fromIdb);
+    return fromIdb;
   }
+  const fromLocal = readLocalMemory(id);
+  if (fromLocal) {
+    cacheChat(id, fromLocal);
+    void idbWriteChat(id, fromLocal);
+    return fromLocal;
+  }
+  return null;
+}
+
+function writeChatMemory(id: string, memory: AgentMemory) {
+  cacheChat(id, memory);
+  writeLocalChat(chatMemoryKey(id), memory);
+  void idbWriteChat(id, memory);
+}
+
+async function persistChatMemory(id: string, memory: AgentMemory) {
+  cacheChat(id, memory);
+  writeLocalChat(chatMemoryKey(id), memory);
+  await idbWriteChat(id, memory);
 }
 
 function readChatIndex(): ChatIndex | null {
@@ -297,9 +322,9 @@ export function activeChatId() {
   return loadChatIndex().activeId;
 }
 
-export function loadAgentMemory(): AgentMemory {
+export async function loadAgentMemory(): Promise<AgentMemory> {
   const index = loadChatIndex();
-  return readChatMemory(index.activeId) || emptyAgentMemory();
+  return (await readChatMemory(index.activeId)) || emptyAgentMemory();
 }
 
 export function saveAgentMemory(memory: AgentMemory) {
@@ -315,9 +340,22 @@ export function saveAgentMemory(memory: AgentMemory) {
   });
 }
 
-export function startNewAgentChat(current: AgentMemory) {
+async function persistActive(memory: AgentMemory) {
+  const index = loadChatIndex();
+  writeChatIndex({
+    ...index,
+    chats: index.chats.map((chat) =>
+      chat.id === index.activeId
+        ? { ...chat, title: chatTitleFromMemory(memory), updatedAt: Date.now() }
+        : chat
+    ),
+  });
+  await persistChatMemory(index.activeId, memory);
+}
+
+export async function startNewAgentChat(current: AgentMemory) {
   if (!current.messages.length) return current;
-  saveAgentMemory(current);
+  await persistActive(current);
   const index = loadChatIndex();
   const id = uuid();
   const memory = emptyAgentMemory();
@@ -329,31 +367,33 @@ export function startNewAgentChat(current: AgentMemory) {
   return memory;
 }
 
-export function openAgentChat(id: string, current: AgentMemory) {
+export async function openAgentChat(id: string, current: AgentMemory) {
   const index = loadChatIndex();
   if (id === index.activeId || !index.chats.some((chat) => chat.id === id)) return current;
-  saveAgentMemory(current);
+  await persistActive(current);
   writeChatIndex({ ...loadChatIndex(), activeId: id });
-  return readChatMemory(id) || emptyAgentMemory();
+  return (await readChatMemory(id)) || emptyAgentMemory();
 }
 
-export function deleteAgentChat(id: string, current: AgentMemory) {
+export async function deleteAgentChat(id: string, current: AgentMemory) {
   const index = loadChatIndex();
-  if (index.activeId !== id) saveAgentMemory(current);
+  if (index.activeId !== id) await persistActive(current);
+  dropCachedChat(id);
   try {
     localStorage.removeItem(chatMemoryKey(id));
   } catch {
     /* ignore */
   }
+  await idbDeleteChat(id);
   const chats = index.chats.filter((chat) => chat.id !== id);
   if (!chats.length) {
     const fresh = createFreshIndex();
-    return readChatMemory(fresh.activeId) || emptyAgentMemory();
+    return (await readChatMemory(fresh.activeId)) || emptyAgentMemory();
   }
   const activeId = index.activeId === id ? chats.slice().sort((a, b) => b.updatedAt - a.updatedAt)[0].id : index.activeId;
   writeChatIndex({ activeId, chats });
   if (activeId === index.activeId && index.activeId !== id) return current;
-  return readChatMemory(activeId) || emptyAgentMemory();
+  return (await readChatMemory(activeId)) || emptyAgentMemory();
 }
 
 function isVideoTab(id: string): id is VideoTabId {
