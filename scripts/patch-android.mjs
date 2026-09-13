@@ -15,10 +15,16 @@ const gradlePath = path.join(androidRoot, "app", "build.gradle");
 const permissions = [
   '    <uses-permission android:name="android.permission.INTERNET" />',
   '    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />',
+  '    <uses-permission android:name="android.permission.WAKE_LOCK" />',
+  '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
+  '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />',
+  '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
 ];
 
 await mkdir(javaDir, { recursive: true });
 await copyFile(path.join(native, "GallerySavePlugin.java"), path.join(javaDir, "GallerySavePlugin.java"));
+await copyFile(path.join(native, "KeepAlivePlugin.java"), path.join(javaDir, "KeepAlivePlugin.java"));
+await copyFile(path.join(native, "KeepAliveService.java"), path.join(javaDir, "KeepAliveService.java"));
 await copyFile(path.join(native, "MainActivity.java"), path.join(javaDir, "MainActivity.java"));
 
 await mkdir(stylesV35Dir, { recursive: true });
@@ -36,6 +42,16 @@ if (xml.includes("android:windowSoftInputMode")) {
   xml = xml.replace(/android:windowSoftInputMode="[^"]*"/, 'android:windowSoftInputMode="adjustResize"');
 } else {
   xml = xml.replace(/<activity\b/, '<activity android:windowSoftInputMode="adjustResize"');
+}
+if (!xml.includes("KeepAliveService")) {
+  xml = xml.replace(
+    "</application>",
+    `        <service
+            android:name="studio.seedream.agent.KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>`
+  );
 }
 await writeFile(manifestPath, xml);
 if (missing.length) console.log(`Added ${missing.length} Android permissions`);
@@ -111,4 +127,4 @@ if (!gradle.includes("ai-story.keystore")) {
   console.log("Added release signing config");
 }
 
-console.log("Patched Android gallery saver, MainActivity, icons, and nav-bar styles");
+console.log("Patched Android gallery saver, keep-alive service, MainActivity, icons, and nav-bar styles");

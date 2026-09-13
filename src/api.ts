@@ -11,7 +11,8 @@ import {
   wanPositivePrompt,
   wanSize,
 } from "./models";
-import { fileToDataUri, isImageFile, isUsableReferenceImage, sleep, uuid } from "./media";
+import { fileToDataUri, isImageFile, isUsableReferenceImage, uuid } from "./media";
+import { nativePollRunware, nativeSleep, withKeepAlive } from "./keep-alive";
 import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
 
@@ -262,13 +263,18 @@ function scheduleWipe(ids: Array<string | undefined>) {
   }
 }
 
-type FinishedTask = { row: Record<string, unknown>; wipeIds: string[] };
+type FinishedTask = { row: Record<string, unknown>; wipeIds: string[]; localPath?: string };
 
 async function poll(taskUUID: string, onProgress?: (n: number) => void): Promise<FinishedTask> {
+  const key = storedKey();
+  if (key && Capacitor.isNativePlatform()) {
+    const native = await nativePollRunware(taskUUID, key);
+    if (native) return native;
+  }
   let delay = 2000;
   const deadline = Date.now() + 15 * 60 * 1000;
   while (Date.now() < deadline) {
-    await sleep(delay);
+    await nativeSleep(delay);
     const payload = await postRunware([{ taskType: "getResponse", taskUUID }]);
     if (payload.errors?.length) throw new Error(errorMessage(payload));
     const rows = payload.data || [];
@@ -523,18 +529,20 @@ export async function completeChat(
   model = loadBrainModel(),
   temperature = 0.4
 ): Promise<string> {
-  const payload = await postOpenRouter(
-    [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
-    maxTokens,
-    model,
-    temperature
-  );
-  const text = grokOutputText(payload).trim();
-  if (!text) throw new Error("The chat model returned no text.");
-  return text;
+  return withKeepAlive("Thinking… You can switch apps.", async () => {
+    const payload = await postOpenRouter(
+      [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      maxTokens,
+      model,
+      temperature
+    );
+    const text = grokOutputText(payload).trim();
+    if (!text) throw new Error("The chat model returned no text.");
+    return text;
+  });
 }
 
 export async function completeGrok(system: string, user: string, maxTokens = 2500): Promise<string> {
@@ -580,24 +588,9 @@ export async function generateImage(
     task.settings = { thinking: true };
   }
 
-  const { row, wipeIds } = await runTask(task, onProgress);
-  const media = resultUrl(row);
-  scheduleWipe([...wipeIds, media.uuid]);
-  const result: StudioResult = {
-    kind: "image",
-    url: media.url,
-    uuid: media.uuid,
-    cost: typeof row.cost === "number" ? row.cost : undefined,
-    filename: `${tab}-${Date.now()}.${tab === "qwen-layered" ? "tiff" : state.imageFormat.toLowerCase()}`,
-  };
-  const persisted = await persistNativeResult(result);
-  return {
-    ...result,
-    url: persisted.url,
-    localPath: persisted.localPath,
-    remoteUrl: /^https?:\/\//i.test(result.url) ? result.url : undefined,
-    uuid: persisted.localPath ? undefined : result.uuid,
-  };
+  return withKeepAlive("Generating a picture… You can switch apps.", async () =>
+    toStudioResult("image", tab, state, await runTask(task, onProgress))
+  );
 }
 
 export async function generateVideo(
@@ -649,16 +642,41 @@ export async function generateVideo(
     }
   }
 
-  const { row, wipeIds } = await runTask(task, onProgress);
-  const media = resultUrl(row);
-  scheduleWipe([...wipeIds, media.uuid]);
+  return withKeepAlive("Generating a video… You can switch apps.", async () =>
+    toStudioResult("video", tab, state, await runTask(task, onProgress))
+  );
+}
+
+async function toStudioResult(
+  kind: "image" | "video",
+  tab: string,
+  state: TabState,
+  finished: FinishedTask
+): Promise<StudioResult> {
+  const media = resultUrl(finished.row);
+  scheduleWipe([...finished.wipeIds, media.uuid]);
+  const ext =
+    kind === "video"
+      ? state.videoFormat.toLowerCase()
+      : tab === "qwen-layered"
+        ? "tiff"
+        : state.imageFormat.toLowerCase();
   const result: StudioResult = {
-    kind: "video",
+    kind,
     url: media.url,
     uuid: media.uuid,
-    cost: typeof row.cost === "number" ? row.cost : undefined,
-    filename: `${tab}-${Date.now()}.${state.videoFormat.toLowerCase()}`,
+    cost: typeof finished.row.cost === "number" ? finished.row.cost : undefined,
+    filename: `${tab}-${Date.now()}.${ext}`,
   };
+  if (finished.localPath) {
+    return {
+      ...result,
+      url: Capacitor.convertFileSrc(finished.localPath),
+      localPath: finished.localPath,
+      remoteUrl: /^https?:\/\//i.test(result.url) ? result.url : undefined,
+      uuid: undefined,
+    };
+  }
   const persisted = await persistNativeResult(result);
   return {
     ...result,

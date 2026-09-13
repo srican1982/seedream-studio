@@ -36,6 +36,7 @@ import {
   type LibraryPhoto,
 } from "./agent";
 import { downloadResult } from "./api";
+import { withKeepAlive } from "./keep-alive";
 import { fileToDataUri, uuid } from "./media";
 import { isNativeApp, pickGalleryImages } from "./native";
 import type { LocalImage, ResultKind, StudioResult } from "./types";
@@ -324,9 +325,11 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     setBusy(true);
     setProgress("Updating…");
     try {
-      const edited = await applyRecreateEdits(current, text, extra);
-      commit(edited.memory);
-      await runOne(edited.memory, edited.shot);
+      await withKeepAlive("Updating… You can switch apps.", async () => {
+        const edited = await applyRecreateEdits(current, text, extra);
+        commit(edited.memory);
+        await runOne(edited.memory, edited.shot);
+      });
     } catch (error) {
       commit(
         pushMessage(memoryRef.current, {
@@ -395,7 +398,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     setBusy(true);
     setProgress(null);
     try {
-      await planAndRun(current);
+      await withKeepAlive("Working… You can switch apps.", () => planAndRun(current));
     } catch (error) {
       commit(
         pushMessage(memoryRef.current, {
@@ -464,7 +467,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         setBusy(true);
         setProgress(null);
         try {
-          await planAndRun(current);
+          await withKeepAlive("Working… You can switch apps.", () => planAndRun(current));
         } catch (error) {
           commit(
             pushMessage(memoryRef.current, {
@@ -513,33 +516,35 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     setProgress(null);
 
     try {
-      if (isRecreate(userMessage.text)) {
-        askToRecreate(current, userMessage.text);
-        return;
-      }
-
-      if (isContinue(userMessage.text)) {
-        const next = nextPendingShot(current);
-        if (!next) {
-          commit(
-            pushMessage(current, {
-              id: uuid(),
-              role: "assistant",
-              text: lastActionableShot(current)
-                ? "Nothing waiting. Tell me what to make next, or recreate a part."
-                : "Nothing waiting. Tell me what to make.",
-              createdAt: Date.now(),
-            })
-          );
+      await withKeepAlive("Working… You can switch apps.", async () => {
+        if (isRecreate(userMessage.text)) {
+          askToRecreate(current, userMessage.text);
           return;
         }
-        await runOne(current, next);
-        return;
-      }
 
-      current = { ...current, chosenRefs: [], hasPickedVideoRefs: false };
-      commit(current);
-      await planAndRun(current);
+        if (isContinue(userMessage.text)) {
+          const next = nextPendingShot(current);
+          if (!next) {
+            commit(
+              pushMessage(current, {
+                id: uuid(),
+                role: "assistant",
+                text: lastActionableShot(current)
+                  ? "Nothing waiting. Tell me what to make next, or recreate a part."
+                  : "Nothing waiting. Tell me what to make.",
+                createdAt: Date.now(),
+              })
+            );
+            return;
+          }
+          await runOne(current, next);
+          return;
+        }
+
+        current = { ...current, chosenRefs: [], hasPickedVideoRefs: false };
+        commit(current);
+        await planAndRun(current);
+      });
     } catch (error) {
       commit(
         pushMessage(memoryRef.current, {
