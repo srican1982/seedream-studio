@@ -43,6 +43,11 @@ if (xml.includes("android:windowSoftInputMode")) {
 } else {
   xml = xml.replace(/<activity\b/, '<activity android:windowSoftInputMode="adjustResize"');
 }
+if (xml.includes("android:allowBackup")) {
+  xml = xml.replace(/android:allowBackup="[^"]*"/, 'android:allowBackup="false"');
+} else {
+  xml = xml.replace(/<application\b/, '<application android:allowBackup="false"');
+}
 if (!xml.includes("KeepAliveService")) {
   xml = xml.replace(
     "</application>",

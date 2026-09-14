@@ -189,7 +189,7 @@ export function chatTitleFromMemory(memory: AgentMemory) {
 
 function parseStoredMemory(parsed: AgentMemory): AgentMemory {
   const images = Array.isArray(parsed.images) ? parsed.images : [];
-  return {
+  return sanitizeMemory({
     brief: parsed.brief || "",
     notes: parsed.notes || "",
     lock: parsed.lock || null,
@@ -218,6 +218,21 @@ function parseStoredMemory(parsed: AgentMemory): AgentMemory {
     recreateNote: parsed.recreateNote || "",
     hasPickedVideoRefs: Boolean(parsed.hasPickedVideoRefs),
     messages: Array.isArray(parsed.messages) ? parsed.messages : [],
+  });
+}
+
+function sanitizeMemory(memory: AgentMemory): AgentMemory {
+  const target =
+    (memory.recreateShotId && memory.shots.find((shot) => shot.id === memory.recreateShotId)) ||
+    lastActionableShot(memory);
+  const canRecreate = Boolean(memory.awaitingRecreate && target);
+  const canApprove = Boolean(nextPendingShot(memory) || lastActionableShot(memory));
+  return {
+    ...memory,
+    awaitingRecreate: canRecreate,
+    recreateShotId: canRecreate ? memory.recreateShotId || target?.id || "" : "",
+    recreateNote: canRecreate ? memory.recreateNote : "",
+    waitingForApproval: Boolean(memory.waitingForApproval && canApprove),
   };
 }
 

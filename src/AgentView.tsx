@@ -13,6 +13,7 @@ import {
   continueStatus,
   isRecreate,
   isRememberOnly,
+  lastActionableShot,
   listAgentChats,
   loadAgentMemory,
   openAgentChat,
@@ -295,7 +296,23 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
   function askToRecreate(current: AgentMemory, text = "", shot?: AgentShot | null) {
     const target = shot || recreateShot(current, text);
     if (!target) {
-      commit(pushMessage(current, { id: uuid(), role: "assistant", text: "Nothing to recreate yet.", createdAt: Date.now() }));
+      commit(
+        pushMessage(
+          {
+            ...current,
+            awaitingRecreate: false,
+            recreateShotId: "",
+            recreateNote: "",
+            waitingForApproval: false,
+          },
+          {
+            id: uuid(),
+            role: "assistant",
+            text: "Nothing to remake yet. Attach a photo and tell me what to make.",
+            createdAt: Date.now(),
+          }
+        )
+      );
       return;
     }
     commit(
@@ -489,8 +506,13 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       current = { ...current, awaitingRecreate: false, recreateShotId: "", recreateNote: "" };
       commit(current);
     } else if (current.awaitingRecreate) {
-      await finishRecreate(current, userMessage.text, images);
-      return;
+      if (!recreateShot(current, userMessage.text)) {
+        current = { ...current, awaitingRecreate: false, recreateShotId: "", recreateNote: "", waitingForApproval: false };
+        commit(current);
+      } else {
+        await finishRecreate(current, userMessage.text, images);
+        return;
+      }
     }
 
     if (current.awaitingVideoRefs && !isRecreate(userMessage.text)) {
@@ -582,7 +604,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
   }
 
   const library = photoLibrary(memory, pending);
-  const recreating = memory.awaitingRecreate && !busy;
+  const recreating = memory.awaitingRecreate && !busy && Boolean(recreateShot(memory, ""));
   const picking = (memory.awaitingVideoRefs || memory.awaitingRecreate) && !busy;
   const recreateKind = memory.shots.find((item) => item.id === memory.recreateShotId)?.kind || "video";
   const photoLimit = recreating ? recreateRefLimit(recreateKind) : VIDEO_REF_LIMIT;
@@ -842,7 +864,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
               </button>
             </div>
           </div>
-        ) : memory.waitingForApproval && !busy && !memory.awaitingVideoRefs ? (
+        ) : memory.waitingForApproval && !busy && !memory.awaitingVideoRefs && lastActionableShot(memory) ? (
           <div className="chat-approve">
             <button type="button" onClick={() => void onSend("continue")}>
               Continue
