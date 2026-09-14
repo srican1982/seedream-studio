@@ -10,12 +10,11 @@ import {
   describePlan,
   emptyAgentMemory,
   isContinue,
+  continueStatus,
   isRecreate,
   isRememberOnly,
-  lastActionableShot,
   listAgentChats,
   loadAgentMemory,
-  nextPendingShot,
   openAgentChat,
   photoLibrary,
   planAgentJob,
@@ -455,7 +454,41 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       return;
     }
 
-    if (current.awaitingRecreate) {
+    if (isContinue(userMessage.text)) {
+      const step = continueStatus(current);
+      commit(
+        pushMessage(step.memory, {
+          id: uuid(),
+          role: "assistant",
+          text: step.text,
+          createdAt: Date.now(),
+        })
+      );
+      if (!step.next) return;
+      setBusy(true);
+      setProgress(null);
+      try {
+        await withKeepAlive("Working… You can switch apps.", () => runOne(memoryRef.current, step.next!));
+      } catch (error) {
+        commit(
+          pushMessage(memoryRef.current, {
+            id: uuid(),
+            role: "assistant",
+            text: error instanceof Error ? error.message : "Something went wrong.",
+            createdAt: Date.now(),
+          })
+        );
+      } finally {
+        setBusy(false);
+        setProgress(null);
+      }
+      return;
+    }
+
+    if (current.awaitingRecreate && images.length && askedForVideo(userMessage.text)) {
+      current = { ...current, awaitingRecreate: false, recreateShotId: "", recreateNote: "" };
+      commit(current);
+    } else if (current.awaitingRecreate) {
       await finishRecreate(current, userMessage.text, images);
       return;
     }
@@ -519,25 +552,6 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       await withKeepAlive("Working… You can switch apps.", async () => {
         if (isRecreate(userMessage.text)) {
           askToRecreate(current, userMessage.text);
-          return;
-        }
-
-        if (isContinue(userMessage.text)) {
-          const next = nextPendingShot(current);
-          if (!next) {
-            commit(
-              pushMessage(current, {
-                id: uuid(),
-                role: "assistant",
-                text: lastActionableShot(current)
-                  ? "Nothing waiting. Tell me what to make next, or recreate a part."
-                  : "Nothing waiting. Tell me what to make.",
-                createdAt: Date.now(),
-              })
-            );
-            return;
-          }
-          await runOne(current, next);
           return;
         }
 

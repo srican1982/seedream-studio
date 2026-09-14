@@ -579,15 +579,15 @@ function isFreshMovie(text: string) {
 
 function shouldContinueMovie(memory: AgentMemory, brief: string) {
   if (memory.hasPickedVideoRefs || isFreshMovie(brief)) return false;
+  if (latestUserPhotos(memory).length) return false;
   const hasClip =
     Boolean(memory.lastStill) ||
     memory.createdStills.some((img) => img.name === CLIP_START || img.name === CLIP_END) ||
     memory.shots.some((shot) => shot.kind === "video" && shot.status === "done");
   if (!hasClip) return false;
-  if (/\b(part\s*\d+|next (part|clip|scene)|continue|same movie|from (the )?last|another (clip|part|video)|clip-end|last frame)\b/i.test(brief)) {
-    return true;
-  }
-  return askedForVideo(brief);
+  return /\b(part\s*\d+|next (part|clip|scene)|continue (the )?(movie|story|scene|video)|same movie|from (the )?last|another (clip|part)|clip-end|last frame)\b/i.test(
+    brief
+  );
 }
 
 function extractPlace(text: string) {
@@ -646,6 +646,37 @@ export function isRecreate(text: string) {
 
 export function nextPendingShot(memory: AgentMemory) {
   return memory.shots.find((shot) => shot.status === "pending") || null;
+}
+
+export function continueStatus(memory: AgentMemory): { memory: AgentMemory; next: AgentShot | null; text: string } {
+  const cleared: AgentMemory = {
+    ...memory,
+    awaitingRecreate: false,
+    recreateShotId: "",
+    recreateNote: "",
+    awaitingVideoRefs: false,
+    waitingForApproval: false,
+    hasPickedVideoRefs: false,
+  };
+  const next = nextPendingShot(cleared);
+  const last = lastActionableShot(cleared);
+  const waiting = cleared.shots.filter((shot) => shot.status === "pending");
+  if (next) {
+    const kind = next.kind === "video" ? `${next.duration}s video` : "still";
+    const queue = waiting.length > 1 ? ` ${waiting.length} pieces are still in the queue.` : "";
+    return {
+      memory: cleared,
+      next,
+      text: `Moving forward.\n\nNow: ${next.title} (${kind}).${queue}`,
+    };
+  }
+  const lastBit =
+    last?.status === "done" ? `${last.title} is done.` : last?.status === "error" ? `${last.title} failed.` : "Nothing is in the queue.";
+  return {
+    memory: cleared,
+    next: null,
+    text: `Moving forward. ${lastBit}\n\nNow: tell me the next scene, or attach a new photo and ask for a video.`,
+  };
 }
 
 export function lastActionableShot(memory: AgentMemory) {
@@ -826,21 +857,21 @@ export function approvalText(memory: AgentMemory, shot: AgentShot) {
   const pending = nextPendingShot(memory);
   if (shot.status !== "done") {
     return pending
-      ? `That one failed. Reply recreate this / ආයෙ හදන්න, or continue / හරි to skip it.`
-      : `That one failed. Reply recreate this / ආයෙ හදන්න, or tell me what to do next.`;
+      ? `That one failed. Continue skips it and makes ${pending.title} next. Recreate this only if you want this piece remade.`
+      : `That one failed. Continue to move on, or recreate this if you want it remade.`;
   }
   if (pending) {
-    return `Reply continue / හරි for the next one, or recreate this part / මේක ආයෙ හදන්න.`;
+    return `Now: ${pending.title} is next. Continue to make that. Recreate this only if you want this last piece remade.`;
   }
-  const stills = memory.createdStills.length;
+  const stills = memory.createdStills.filter((img) => img.name !== CLIP_START && img.name !== CLIP_END).length;
   const videos = memory.shots.filter((item) => item.kind === "video" && item.status === "done").length;
   if (videos > 1) {
-    return `Those clips are ready. Play them in order for the full video, or recreate one.`;
+    return `Those clips are ready. Play them in order for the full video.\n\nNow: tell me the next scene, or attach a new photo and ask for a video.`;
   }
   if (stills) {
-    return `Those ${stills} stills are ready. Tell me what you want next, or recreate one of them.`;
+    return `Those stills are ready.\n\nNow: tell me the next scene, or attach a new photo and ask for a video.`;
   }
-  return `Done. Tell me the next job, or recreate this.`;
+  return `Done.\n\nNow: tell me the next scene, or attach a new photo and ask for a video.`;
 }
 
 function askedForBoth(text: string) {
