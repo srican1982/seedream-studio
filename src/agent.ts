@@ -8,8 +8,8 @@ import type { Aspect, ImageTabId, LocalImage, StudioResult, TabState, VideoTabId
 
 type VideoResolution = "480p" | "720p" | "1080p";
 
-const MEMORY_KEY = "seedream_agent_memory";
-const CHATS_KEY = "seedream_agent_chats";
+const MEMORY_KEY = "seedream_agent_memory_v2";
+const CHATS_KEY = "seedream_agent_chats_v2";
 
 function chatMemoryKey(id: string) {
   return `seedream_agent_chat_${id}`;
@@ -225,7 +225,8 @@ function sanitizeMemory(memory: AgentMemory): AgentMemory {
   const target =
     (memory.recreateShotId && memory.shots.find((shot) => shot.id === memory.recreateShotId)) ||
     lastActionableShot(memory);
-  const canRecreate = Boolean(memory.awaitingRecreate && target);
+  const usable = Boolean(target?.result?.url || target?.prompt);
+  const canRecreate = Boolean(memory.awaitingRecreate && target && usable);
   const canApprove = Boolean(nextPendingShot(memory) || lastActionableShot(memory));
   return {
     ...memory,
@@ -656,7 +657,16 @@ function mergeMovieLock(prev: AgentLock | null, brief: string): AgentLock {
 }
 
 export function isRecreate(text: string) {
-  return /\b(recreate|redo|retry|remake|again)\b/i.test(text) || /ආයෙ|නැවත|නැවතත්/.test(text);
+  const t = text.trim();
+  if (!t) return false;
+  if (
+    /^(please\s+)?(recreate|redo|retry|remake)(\s+this)?(\s+(one|part|clip|shot|video|still|picture|image|it))?(\s*[.!]*)?$/i.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  return /^(ආයෙ(\s+හදන්න)?|නැවත(\s+හදන්න)?|නැවතත්(\s+හදන්න)?)(\s*[.!]*)?$/i.test(t);
 }
 
 export function nextPendingShot(memory: AgentMemory) {
@@ -703,7 +713,7 @@ export function recreateShot(memory: AgentMemory, text: string) {
     const current = memory.shots.find((item) => item.id === memory.recreateShotId);
     if (current) return current;
   }
-  const numbered = text.match(/\b(?:shot|still|clip|image|part|number|#)?\s*(\d+)\b/i);
+  const numbered = text.match(/\b(?:shot|still|clip|part)\s*(\d+)\b/i);
   if (numbered) {
     const index = Number(numbered[1]) - 1;
     const shot = memory.shots[index];

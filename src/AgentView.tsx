@@ -432,13 +432,13 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
 
   async function onSend(preset?: string) {
     const text = (preset ?? draft).trim();
-    const recreating = memoryRef.current.awaitingRecreate;
+    const recreating = memoryRef.current.awaitingRecreate && Boolean(recreateShot(memoryRef.current, ""));
     if ((!text && pending.length === 0 && !recreating) || busy) return;
     const images = pending;
     const userMessage: AgentMessage = {
       id: uuid(),
       role: "user",
-      text: text || (recreating ? "Recreate this" : "Use these photos."),
+      text: text || (images.length ? "Use these photos." : recreating ? "Recreate this" : "Use these photos."),
       images,
       createdAt: Date.now(),
     };
@@ -471,7 +471,18 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       return;
     }
 
-    if (isContinue(userMessage.text)) {
+    if (images.length) {
+      current = {
+        ...current,
+        awaitingRecreate: false,
+        recreateShotId: "",
+        recreateNote: "",
+        waitingForApproval: false,
+      };
+      commit(current);
+    }
+
+    if (isContinue(userMessage.text) && !images.length) {
       const step = continueStatus(current);
       commit(
         pushMessage(step.memory, {
@@ -505,14 +516,12 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     if (current.awaitingRecreate && images.length && askedForVideo(userMessage.text)) {
       current = { ...current, awaitingRecreate: false, recreateShotId: "", recreateNote: "" };
       commit(current);
+    } else if (current.awaitingRecreate && !images.length && recreateShot(current, userMessage.text)) {
+      await finishRecreate(current, userMessage.text, images);
+      return;
     } else if (current.awaitingRecreate) {
-      if (!recreateShot(current, userMessage.text)) {
-        current = { ...current, awaitingRecreate: false, recreateShotId: "", recreateNote: "", waitingForApproval: false };
-        commit(current);
-      } else {
-        await finishRecreate(current, userMessage.text, images);
-        return;
-      }
+      current = { ...current, awaitingRecreate: false, recreateShotId: "", recreateNote: "", waitingForApproval: false };
+      commit(current);
     }
 
     if (current.awaitingVideoRefs && !isRecreate(userMessage.text)) {
@@ -562,7 +571,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       return;
     }
 
-    if (askedForVideo(userMessage.text) && !isContinue(userMessage.text) && !isRecreate(userMessage.text)) {
+    if (askedForVideo(userMessage.text) && !isContinue(userMessage.text) && !(isRecreate(userMessage.text) && !images.length)) {
       askForVideoPhotos(current, images);
       return;
     }
@@ -572,7 +581,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
 
     try {
       await withKeepAlive("Working… You can switch apps.", async () => {
-        if (isRecreate(userMessage.text)) {
+        if (isRecreate(userMessage.text) && !images.length && lastActionableShot(current)) {
           askToRecreate(current, userMessage.text);
           return;
         }
