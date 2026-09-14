@@ -418,12 +418,20 @@ function defaultVideoModel(): VideoTabId {
   return "wan-3-prime";
 }
 
-export function shotPrompt(_lock: AgentLock | null, notes: string, shot: AgentShot, brief = "") {
+export function shotPrompt(lock: AgentLock | null, notes: string, shot: AgentShot, brief = "") {
   let prompt = shot.poseFromSecond ? applyPoseIdentityLock(shot.prompt, shot.identityRefIds.length) : shot.prompt;
   prompt = keepSinhalaDialog(prompt, brief);
-  const remembered = notes.trim();
-  if (!remembered) return prompt;
-  return `${prompt}\nRemembered from the user: ${remembered}`;
+  const bits: string[] = [];
+  if (notes.trim()) bits.push(`Remembered from the user: ${notes.trim()}`);
+  if (lock?.atmosphere) bits.push(`Keep this place unless they asked to change it: ${lock.atmosphere}.`);
+  if (lock?.wardrobe) bits.push(`Keep clothes unless they asked to change them: ${lock.wardrobe}.`);
+  if (shot.kind === "video" && shot.useLastFrame) {
+    bits.push(
+      "clip-end / last frame is where the previous clip stopped — start this clip from that picture. People photos are the cast, including friends who may not be in that last frame. clip-start is who appeared at the beginning of the last clip. Keep those same people."
+    );
+  }
+  if (!bits.length) return prompt;
+  return `${prompt}\n${bits.join(" ")}`;
 }
 
 function poseIdentityLock(identityCount: number) {
@@ -505,6 +513,7 @@ How to write shot.prompt:
 - If they already picked photos in tap order, refs is attached and those are the only photos.
 - If they attached new photos and did not mention the created stills, refs is attached.
 - If they attached no new photos and asked for a video, refs is created — unless they already picked photos.
+- This chat may be one movie. If a movie lock place is given, keep that place, clothes, and people unless they named a change. "part 3", "next clip", "continue the movie", or another video in the same chat is the same movie: refs is both (uploaded people + clip-start/clip-end). clip-end is where the last clip stopped. clip-start is who appeared at the start of the last clip, including friends who are gone by the ending frame.
 - Qwen 3.0 Pro can only take 3 reference images. Wan can take 10. If there are more, keep the ones the user cares about most, usually new uploads first.
 - For video, describe the motion they asked in the same explicit way. Always include audible speech and scene sound in the prompt. If they wrote dialog in Sinhala letters, those spoken words in the prompt must stay in Sinhala letters.
 - Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. Video is always 480p. Duration is what they said, else 10s. Wan max 30s per clip.
@@ -559,6 +568,76 @@ export function isRememberOnly(text: string) {
 
 export function isContinue(text: string) {
   return /^(ok|okay|k|yes|yep|yeah|continue|next|go|good|fine|approved|looks good|do it|proceed|හරි|ඔව්|ඔව්නේ|හොඳයි|ඉදිරියට)(?:\s*[.!])*$/i.test(text.trim());
+}
+
+const CLIP_START = "clip-start";
+const CLIP_END = "clip-end";
+
+function isFreshMovie(text: string) {
+  return /\b(new movie|new story|different (movie|story|people)|start over)\b/i.test(text);
+}
+
+function shouldContinueMovie(memory: AgentMemory, brief: string) {
+  if (memory.hasPickedVideoRefs || isFreshMovie(brief)) return false;
+  const hasClip =
+    Boolean(memory.lastStill) ||
+    memory.createdStills.some((img) => img.name === CLIP_START || img.name === CLIP_END) ||
+    memory.shots.some((shot) => shot.kind === "video" && shot.status === "done");
+  if (!hasClip) return false;
+  if (/\b(part\s*\d+|next (part|clip|scene)|continue|same movie|from (the )?last|another (clip|part|video)|clip-end|last frame)\b/i.test(brief)) {
+    return true;
+  }
+  return askedForVideo(brief);
+}
+
+function extractPlace(text: string) {
+  const places = [
+    "park",
+    "beach",
+    "hotel",
+    "bedroom",
+    "kitchen",
+    "street",
+    "garden",
+    "car",
+    "club",
+    "pool",
+    "forest",
+    "house",
+    "apartment",
+    "room",
+    "restaurant",
+    "bar",
+    "office",
+    "shop",
+    "temple",
+    "school",
+    "bus",
+    "train",
+    "lake",
+    "mountain",
+    "village",
+    "city",
+  ];
+  const lower = text.toLowerCase();
+  const hit = places.find((place) => new RegExp(`\\b${place}\\b`, "i").test(lower));
+  if (hit) return hit;
+  if (/උයන|පාර්ක්/.test(text)) return "park";
+  if (/වෙරළ|බීච්/.test(text)) return "beach";
+  if (/හෝටල්/.test(text)) return "hotel";
+  if (/ගෙදර|නිවස/.test(text)) return "house";
+  return "";
+}
+
+function mergeMovieLock(prev: AgentLock | null, brief: string): AgentLock {
+  const place = extractPlace(brief);
+  return {
+    identity: prev?.identity || "",
+    wardrobe: prev?.wardrobe || "",
+    lighting: prev?.lighting || "",
+    camera: prev?.camera || "",
+    atmosphere: place || prev?.atmosphere || "",
+  };
 }
 
 export function isRecreate(text: string) {
@@ -720,7 +799,7 @@ function assignCreatedStillFrames(shots: AgentShot[], stills: LocalImage[]) {
     if (shot.kind !== "video" || shot.refSource === "user" || shot.refSource === "both" || shot.frameStillIds.length) return shot;
     const index = videos.indexOf(shot);
     const maxPer = Math.max(1, findVideo(shot.model as VideoTabId).maxImages);
-    const useLastFrame = index > 0;
+    const useLastFrame = index > 0 || shot.useLastFrame;
     const room = Math.max(1, useLastFrame ? maxPer - 1 : maxPer);
     const remainingClips = videos.length - index;
     const remainingStills = Math.max(0, usable.length - offset);
@@ -968,13 +1047,15 @@ function pickRefSource(
 ): AgentRefSource {
   if (memory.hasPickedVideoRefs) return "user";
   const raw = `${parsed.refs || ""}`.toLowerCase();
-  const hasCreated = memory.createdStills.length > 0;
+  const hasCreated = memory.createdStills.length > 0 || Boolean(memory.lastStill);
   const hasUploads = freshUploads.length > 0 || memory.userRefs.length > 0 || memory.images.length > 0;
+  if (shouldContinueMovie(memory, brief) && hasUploads) return "both";
   if (/\b(both|all)\b/.test(raw) && hasCreated && hasUploads) return "both";
   if (/\b(created|stills|generated)\b/.test(raw) && hasCreated) return "created";
   if (/\b(attached|uploaded|user|new)\b/.test(raw)) return "user";
   if (freshUploads.length && hasCreated && askedForBoth(brief)) return "both";
   if (freshUploads.length) return "user";
+  if (hasCreated && askedForVideo(brief) && hasUploads) return "both";
   if (hasCreated && askedForVideo(brief)) return "created";
   return "user";
 }
@@ -995,7 +1076,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
         ? memory.userRefs
         : memory.images;
   const history = memory.messages
-    .slice(-8)
+    .slice(-12)
     .map((item) => `${item.role}: ${item.text}`)
     .join("\n");
   const uploadedParts = picked
@@ -1018,6 +1099,10 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
         ? "CRITICAL: they named some photos for the people and others for poses. Read the bar numbers they said. Do not assume photo 1 is people or photo 2 is pose. One still per pose they named. Identity photos + that pose photo only. Do not blend faces."
         : "",
     memory.notes.trim() ? `Remembered facts from the user (do not add extra):\n${memory.notes.trim()}` : "",
+    memory.lock?.atmosphere ? `Movie lock — keep this place unless they named a change: ${memory.lock.atmosphere}.` : "",
+    shouldContinueMovie(memory, brief)
+      ? "This is the next part of the same movie. Keep the same people photos. Use clip-end as the starting picture. Keep friends from the people photos and from clip-start even if they are missing from clip-end."
+      : "",
     history ? `Recent chat:\n${history}` : "",
     SINHALA.test(brief)
       ? "The latest request has Sinhala letters. Any spoken dialog they typed in Sinhala must stay in those exact Sinhala letters in shot.prompt. Do not convert those spoken words to English letters."
@@ -1043,13 +1128,8 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     );
     parsed = parsePlanJson(raw);
   }
-  const lock: AgentLock = {
-    identity: "",
-    wardrobe: "",
-    lighting: "",
-    camera: "",
-    atmosphere: "",
-  };
+  const movieFollow = shouldContinueMovie(memory, brief);
+  const lock: AgentLock = mergeMovieLock(memory.lock, brief);
   const refSource = memory.hasPickedVideoRefs ? "user" : pickRefSource(parsed, memory, brief, freshUploads);
   const emptyIds: string[] = [];
 
@@ -1096,7 +1176,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
       resolution,
       model,
       refSource: poseJob ? "user" as const : shotRefs,
-      useLastFrame: false,
+      useLastFrame: kind === "video" && movieFollow,
       frameStillIds: [] as string[],
       identityRefIds,
       poseRefIds,
@@ -1147,7 +1227,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
         resolution: "480p" as const,
         model,
         refSource: poseJob ? "user" as const : refSource,
-        useLastFrame: false,
+        useLastFrame: kind === "video" && movieFollow,
         frameStillIds: [] as string[],
         identityRefIds: poseJob ? libraryIds(library, identity) : emptyIds,
         poseRefIds: poseJob && poseNum ? libraryIds(library, [poseNum]) : emptyIds,
@@ -1172,6 +1252,29 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
   };
 }
 
+function pushRef(out: LocalImage[], img: LocalImage | null | undefined) {
+  if (!img || !isUsableReferenceImage(img.dataUri) || out.some((item) => item.id === img.id)) return;
+  out.push(img);
+}
+
+function movieCastRefs(memory: AgentMemory, max: number) {
+  const people = (memory.userRefs.length ? memory.userRefs : memory.images).filter((img) => isUsableReferenceImage(img.dataUri));
+  const start = memory.createdStills.find((img) => img.name === CLIP_START);
+  const end =
+    memory.lastStill ||
+    memory.createdStills.find((img) => img.name === CLIP_END);
+  const extras = memory.createdStills.filter((img) => img.name !== CLIP_START && img.name !== CLIP_END);
+  const out: LocalImage[] = [];
+  for (const img of people) pushRef(out, img);
+  pushRef(out, end);
+  pushRef(out, start);
+  for (const img of extras) {
+    if (out.length >= max) break;
+    pushRef(out, img);
+  }
+  return out.slice(0, Math.max(1, max));
+}
+
 function refsForShot(memory: AgentMemory, shot: AgentShot) {
   const max = shot.kind === "image" ? findImage(shot.model as ImageTabId).maxImages : findVideo(shot.model as VideoTabId).maxImages;
   if (shot.kind === "image" && (shot.identityRefIds.length || shot.poseRefIds.length)) {
@@ -1186,6 +1289,13 @@ function refsForShot(memory: AgentMemory, shot: AgentShot) {
   }
   if (memory.hasPickedVideoRefs) {
     return memory.chosenRefs.filter((img) => isUsableReferenceImage(img.dataUri)).slice(0, Math.max(1, max));
+  }
+  if (
+    shot.kind === "video" &&
+    (shot.useLastFrame || memory.lastStill || memory.createdStills.some((img) => img.name === CLIP_START || img.name === CLIP_END))
+  ) {
+    const movie = movieCastRefs(memory, max);
+    if (movie.length) return movie;
   }
   const uploads = (memory.userRefs.length ? memory.userRefs : memory.images).filter((img) => isUsableReferenceImage(img.dataUri));
   if (shot.refSource === "both") {
@@ -1251,12 +1361,15 @@ async function sourceToJpegDataUri(source: string): Promise<string | null> {
 }
 
 export async function resultToStill(result: StudioResult): Promise<LocalImage | null> {
-  if (result.kind !== "image") return captureVideoStill(result.url);
+  if (result.kind !== "image") {
+    const frames = await captureVideoFrames(result.url);
+    return frames.end || frames.start;
+  }
   const sources = [result.remoteUrl, result.url, result.localPath].filter((item): item is string => Boolean(item));
   for (const source of sources) {
     try {
       const dataUri = await sourceToJpegDataUri(source);
-      if (dataUri) return { id: uuid(), name: "last-still", preview: dataUri, dataUri };
+      if (dataUri) return { id: uuid(), name: CLIP_END, preview: dataUri, dataUri };
     } catch {
       /* try next source */
     }
@@ -1264,38 +1377,68 @@ export async function resultToStill(result: StudioResult): Promise<LocalImage | 
   return null;
 }
 
-async function captureVideoStill(url: string): Promise<LocalImage | null> {
+function snapFrame(video: HTMLVideoElement, name: string): LocalImage {
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth || 720;
+  canvas.height = video.videoHeight || 1280;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("no canvas");
+  ctx.drawImage(video, 0, 0);
+  const dataUri = canvas.toDataURL("image/jpeg", 0.82);
+  return { id: uuid(), name, preview: dataUri, dataUri };
+}
+
+async function captureVideoFrames(url: string): Promise<{ start: LocalImage | null; end: LocalImage | null }> {
   return new Promise((resolve) => {
     const video = document.createElement("video");
     video.muted = true;
     video.playsInline = true;
     video.preload = "auto";
-    video.crossOrigin = "anonymous";
-    const fail = () => resolve(null);
-    video.onerror = fail;
+    if (/^https?:\/\//i.test(url) && !/_capacitor_/i.test(url)) video.crossOrigin = "anonymous";
+    let start: LocalImage | null = null;
+    let step: "start" | "end" = "start";
+    const done = (end: LocalImage | null = null) => resolve({ start, end });
+    const timer = window.setTimeout(() => done(null), 12000);
+    const finish = (end: LocalImage | null) => {
+      window.clearTimeout(timer);
+      done(end);
+    };
+    video.onerror = () => finish(null);
     video.onloadeddata = () => {
       try {
-        video.currentTime = Math.max(0, (video.duration || 1) - 0.08);
+        const duration = video.duration || 1;
+        video.currentTime = Math.min(0.12, Math.max(0, duration * 0.04));
       } catch {
-        fail();
+        finish(null);
       }
     };
     video.onseeked = () => {
       try {
-        const canvas = document.createElement("canvas");
-        canvas.width = video.videoWidth || 720;
-        canvas.height = video.videoHeight || 1280;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return fail();
-        ctx.drawImage(video, 0, 0);
-        const dataUri = canvas.toDataURL("image/jpeg", 0.82);
-        resolve({ id: uuid(), name: "last-still", preview: dataUri, dataUri });
+        if (step === "start") {
+          start = snapFrame(video, CLIP_START);
+          step = "end";
+          const endTime = Math.max(0, (video.duration || 1) - 0.08);
+          if (Math.abs(endTime - video.currentTime) < 0.05) {
+            finish({ id: uuid(), name: CLIP_END, preview: start.preview, dataUri: start.dataUri });
+            return;
+          }
+          video.currentTime = endTime;
+          return;
+        }
+        finish(snapFrame(video, CLIP_END));
       } catch {
-        fail();
+        finish(start);
       }
     };
     video.src = url;
   });
+}
+
+function upsertClipStills(existing: LocalImage[], start: LocalImage | null, end: LocalImage | null) {
+  const next = existing.filter((img) => img.name !== CLIP_START && img.name !== CLIP_END && img.name !== "last-still");
+  if (start) next.push(start);
+  if (end) next.push(end);
+  return next;
 }
 
 export async function runAgentShot(
@@ -1325,14 +1468,18 @@ export async function runAgentShot(
       ? await generateImage(shot.model as ImageTabId, state, onProgress)
       : await generateVideo(shot.model as VideoTabId, state, onProgress);
 
-  const still = await resultToStill(result);
+  const still = result.kind === "image" ? await resultToStill(result) : null;
+  const clipFrames = result.kind === "video" ? await captureVideoFrames(result.url) : { start: null, end: null };
+  const clipEnd = clipFrames.end || clipFrames.start;
   return {
     ...memory,
-    lastStill: shot.kind === "video" ? still || memory.lastStill : memory.lastStill,
+    lastStill: shot.kind === "video" ? clipEnd || memory.lastStill : memory.lastStill,
     createdStills:
-      shot.kind === "image" && still
-        ? [...memory.createdStills.filter((img) => img.name !== `still-${shotId}`), { ...still, name: `still-${shotId}` }]
-        : memory.createdStills,
+      shot.kind === "video"
+        ? upsertClipStills(memory.createdStills, clipFrames.start, clipEnd)
+        : still
+          ? [...memory.createdStills.filter((img) => img.name !== `still-${shotId}`), { ...still, name: `still-${shotId}` }]
+          : memory.createdStills,
     waitingForApproval: true,
     shots: memory.shots.map((item) =>
       item.id === shotId ? { ...item, status: "done", result, error: undefined } : item
@@ -1352,7 +1499,7 @@ export function describePlan(_lock: AgentLock, shots: AgentShot[]) {
   const shotLines = shots.map((shot, index) => {
     const extra =
       shot.kind === "video"
-        ? `${shot.duration}s 480p${shot.useLastFrame ? " · last frame + remaining stills" : shot.refSource === "both" ? " · uploaded photos + created stills" : shot.refSource === "user" ? " · the photos you picked, in tap order" : " · created stills"}`
+        ? `${shot.duration}s 480p${shot.useLastFrame ? " · last frame + people photos" : shot.refSource === "both" ? " · uploaded photos + created stills" : shot.refSource === "user" ? " · the photos you picked, in tap order" : " · created stills"}`
         : shot.refSource === "both"
           ? "still · uploaded photos + created stills"
           : shot.refSource === "created"
