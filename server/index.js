@@ -67,6 +67,7 @@ app.post("/api/enhance", async (req, res) => {
         max_tokens: typeof body.max_tokens === "number" ? body.max_tokens : 1024,
         provider: body.provider || { data_collection: "deny", zdr: true },
         ...(Array.isArray(body.safety_settings) ? { safety_settings: body.safety_settings } : {}),
+        ...(body.reasoning && typeof body.reasoning === "object" ? { reasoning: body.reasoning } : {}),
       }),
       signal: AbortSignal.timeout(120000),
     });

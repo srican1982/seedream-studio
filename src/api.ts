@@ -380,18 +380,35 @@ Expand this prompt:\n${input.prompt.trim()}`,
   ];
 }
 
-function grokOutputText(payload: Record<string, unknown>) {
-  const choices = payload.choices as Array<{ message?: { content?: unknown } }> | undefined;
-  const fromChat = choices?.[0]?.message?.content;
-  if (typeof fromChat === "string" && fromChat.trim()) return fromChat;
-  if (Array.isArray(fromChat)) {
-    const joined = fromChat
-      .map((part) => (typeof part === "string" ? part : (part as { text?: string })?.text || ""))
-      .join("");
-    if (joined.trim()) return joined;
+function collectText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value) return "";
+  if (Array.isArray(value)) return value.map(collectText).join("");
+  if (typeof value === "object") {
+    const part = value as Record<string, unknown>;
+    return collectText(part.text ?? part.content ?? part.output_text ?? "");
   }
-  if (typeof payload.output_text === "string" && payload.output_text.trim()) return payload.output_text;
   return "";
+}
+
+function grokOutputText(payload: Record<string, unknown>) {
+  const choices = payload.choices as Array<{ text?: unknown; message?: Record<string, unknown> }> | undefined;
+  const message = choices?.[0]?.message;
+  const content = collectText(message?.content || choices?.[0]?.text || payload.output_text).trim();
+  if (content) return content;
+  const reasoning = collectText(message?.reasoning || message?.reasoning_content).trim();
+  if (reasoning && /[{[]/.test(reasoning)) return reasoning;
+  return "";
+}
+
+function emptyChatError(payload: Record<string, unknown>) {
+  const choices = payload.choices as Array<{ finish_reason?: string; message?: { refusal?: string } }> | undefined;
+  const finish = choices?.[0]?.finish_reason || "";
+  const refusal = choices?.[0]?.message?.refusal?.trim();
+  if (refusal) return refusal;
+  if (finish === "length") return "The chat model ran out of space. Send that again.";
+  if (payload.error) return grokErrorMessage(payload, "The chat model came back empty. Send that again.");
+  return "The chat model came back empty. Send that again.";
 }
 
 function cleanEnhancedPrompt(text: string, promptMax: number) {
@@ -410,15 +427,22 @@ function grokErrorMessage(payload: Record<string, unknown>, fallback: string) {
 }
 
 function enhanceBody(messages: ChatMessage[], maxTokens: number, model: string, temperature = 0.7) {
+  const thinking = isGemini(model) ? Math.min(1536, Math.max(512, Math.floor(maxTokens * 0.3))) : 0;
   const body: Record<string, unknown> = {
     model,
     messages,
     stream: false,
     temperature,
-    max_tokens: maxTokens,
+    max_tokens: maxTokens + thinking,
     provider: providerFor(model),
   };
-  if (isGemini(model)) body.safety_settings = GEMINI_SAFETY;
+  if (isGemini(model)) {
+    body.safety_settings = GEMINI_SAFETY;
+    body.reasoning = {
+      max_tokens: thinking,
+      exclude: true,
+    };
+  }
   return body;
 }
 
@@ -440,7 +464,10 @@ async function openRouterRequest(body: Record<string, unknown>, key: string) {
       connectTimeout: 120000,
       readTimeout: 120000,
     });
-    const data = (typeof res.data === "string" ? JSON.parse(res.data) : res.data) as Record<string, unknown>;
+    const data =
+      typeof res.data === "string"
+        ? (JSON.parse(res.data) as Record<string, unknown>)
+        : ((res.data || {}) as Record<string, unknown>);
     if (res.status >= 400) throw new Error(grokErrorMessage(data, `OpenRouter HTTP ${res.status}`));
     return data;
   }
@@ -512,10 +539,13 @@ export async function enhancePrompt(input: EnhancePromptInput): Promise<string> 
   const source = input.prompt.trim();
   if (source.length < 2) throw new Error("Write a prompt first.");
   const maxTokens = Math.min(2048, Math.max(256, Math.ceil(input.promptMax / 2.5)));
-  const payload = await postOpenRouter(grokEnhanceMessages(input), maxTokens);
-  const text = cleanEnhancedPrompt(grokOutputText(payload), input.promptMax);
-  if (!text) throw new Error("Grok returned no enhanced prompt.");
-  return text;
+  const messages = grokEnhanceMessages(input);
+  for (const extra of [0, 1024]) {
+    const payload = await postOpenRouter(messages, maxTokens + extra);
+    const text = cleanEnhancedPrompt(grokOutputText(payload), input.promptMax);
+    if (text) return text;
+  }
+  throw new Error("The chat model came back empty. Send that again.");
 }
 
 export function canAutoEnhancePrompt(prompt: string) {
@@ -530,18 +560,24 @@ export async function completeChat(
   temperature = 0.4
 ): Promise<string> {
   return withKeepAlive("Thinking… You can switch apps.", async () => {
-    const payload = await postOpenRouter(
-      [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      maxTokens,
-      model,
-      temperature
-    );
-    const text = grokOutputText(payload).trim();
-    if (!text) throw new Error("The chat model returned no text.");
-    return text;
+    const messages: ChatMessage[] = [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ];
+    let lastEmpty = "The chat model came back empty. Send that again.";
+    for (const extra of [0, 2048]) {
+      try {
+        const payload = await postOpenRouter(messages, maxTokens + extra, model, extra ? 0.2 : temperature);
+        const text = grokOutputText(payload).trim();
+        if (text) return text;
+        lastEmpty = emptyChatError(payload);
+      } catch (error) {
+        lastEmpty = error instanceof Error ? error.message : lastEmpty;
+        if (!extra) continue;
+        throw error instanceof Error ? error : new Error(lastEmpty);
+      }
+    }
+    throw new Error(lastEmpty);
   });
 }
 
