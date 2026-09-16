@@ -604,8 +604,45 @@ export function isRememberOnly(text: string) {
   return /^\s*remember\b/i.test(text) && !/\b(make|create|generate|render|video|still|shot|series|clip)\b/i.test(text);
 }
 
+function wordDistance(a: string, b: string) {
+  const rows = Array.from({ length: a.length + 1 }, (_, i) => {
+    const row = new Array<number>(b.length + 1);
+    row[0] = i;
+    return row;
+  });
+  for (let j = 0; j <= b.length; j += 1) rows[0][j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      rows[i][j] =
+        a[i - 1] === b[j - 1]
+          ? rows[i - 1][j - 1]
+          : 1 + Math.min(rows[i - 1][j], rows[i][j - 1], rows[i - 1][j - 1]);
+    }
+  }
+  return rows[a.length][b.length];
+}
+
+function trainWord(raw: string) {
+  return raw.toLowerCase().replace(/[^a-z]/g, "");
+}
+
+function isTrainTypo(raw: string) {
+  const word = trainWord(raw);
+  if (word.length < 4 || word.length > 12) return false;
+  if (/^(travel|travels|transfer|transit|triangle|trend|trends|tracker|track)$/.test(word)) return false;
+  const folded = word.replace(/ei|ie/g, "ai").replace(/d(?=in)/g, "").replace(/(.)\1+/g, "$1");
+  return (
+    /^(train|training|trainin|traini|trainig|trining)$/.test(folded) ||
+    wordDistance(folded, "training") <= 2 ||
+    wordDistance(folded, "train") <= 1
+  );
+}
+
 export function isTrainCommand(text: string) {
-  return /^\s*(train|training|save person|save people|learn person)\b/i.test(text.trim());
+  const t = text.trim();
+  if (/^\s*(please\s+)?(train|training|save person|save people|learn person)\b/i.test(t)) return true;
+  const first = t.split(/\s+/)[0] || "";
+  return isTrainTypo(first);
 }
 
 export function isForgetPerson(text: string) {
@@ -613,10 +650,14 @@ export function isForgetPerson(text: string) {
 }
 
 export function trainNameFrom(text: string) {
-  const cut = text
+  let cut = text
     .replace(/^\s*(please\s+)?(train|training|save person|save people|learn person|forget)\b[:\s-]*/i, "")
     .replace(/\s+/g, " ")
     .trim();
+  if (cut === text.replace(/\s+/g, " ").trim()) {
+    const words = text.trim().split(/\s+/);
+    if (words[0] && isTrainTypo(words[0])) cut = words.slice(1).join(" ");
+  }
   return cut && !/^(him|her|them|this|that|person|people)$/i.test(cut) ? cut : "";
 }
 
