@@ -9,7 +9,6 @@ const javaDir = path.join(androidApp, "java", "studio", "seedream", "agent");
 const manifestPath = path.join(androidApp, "AndroidManifest.xml");
 const stylesPath = path.join(androidApp, "res", "values", "styles.xml");
 const stylesV35Dir = path.join(androidApp, "res", "values-v35");
-const colorsPath = path.join(androidApp, "res", "values", "ic_launcher_background.xml");
 const gradlePath = path.join(androidRoot, "app", "build.gradle");
 
 const permissions = [
@@ -75,35 +74,17 @@ try {
   console.log("Could not patch values/styles.xml");
 }
 
-const icon = path.join(native, "ic_launcher.png");
 for (const density of ["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"]) {
+  const from = path.join(native, `mipmap-${density}`);
   const dir = path.join(androidApp, "res", `mipmap-${density}`);
   await mkdir(dir, { recursive: true });
-  await copyFile(icon, path.join(dir, "ic_launcher.png"));
-  await copyFile(icon, path.join(dir, "ic_launcher_round.png"));
-  await copyFile(icon, path.join(dir, "ic_launcher_foreground.png"));
+  for (const name of ["ic_launcher.png", "ic_launcher_round.png", "ic_launcher_foreground.png"]) {
+    await copyFile(path.join(from, name), path.join(dir, name));
+  }
 }
 
 const anyDpi = path.join(androidApp, "res", "mipmap-anydpi-v26");
-await mkdir(anyDpi, { recursive: true });
-await mkdir(path.join(androidApp, "res", "values"), { recursive: true });
-await writeFile(
-  colorsPath,
-  `<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <color name="ic_launcher_background">#0B0C10</color>
-</resources>
-`
-);
-const adaptive = `<?xml version="1.0" encoding="utf-8"?>
-<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@mipmap/ic_launcher_foreground"/>
-    <foreground android:drawable="@android:color/transparent"/>
-    <monochrome android:drawable="@mipmap/ic_launcher_foreground"/>
-</adaptive-icon>
-`;
-await writeFile(path.join(anyDpi, "ic_launcher.xml"), adaptive);
-await writeFile(path.join(anyDpi, "ic_launcher_round.xml"), adaptive);
+await rm(anyDpi, { recursive: true, force: true });
 await rm(path.join(androidApp, "res", "drawable-v24", "ic_launcher_foreground.xml"), { force: true });
 await rm(path.join(androidApp, "res", "drawable", "ic_launcher_foreground.xml"), { force: true });
 
