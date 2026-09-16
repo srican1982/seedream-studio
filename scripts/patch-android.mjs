@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const root = process.cwd();
@@ -75,13 +75,13 @@ try {
   console.log("Could not patch values/styles.xml");
 }
 
+const icon = path.join(native, "ic_launcher.png");
 for (const density of ["mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi"]) {
-  const from = path.join(native, `mipmap-${density}`);
   const dir = path.join(androidApp, "res", `mipmap-${density}`);
   await mkdir(dir, { recursive: true });
-  for (const name of ["ic_launcher.png", "ic_launcher_round.png", "ic_launcher_foreground.png"]) {
-    await copyFile(path.join(from, name), path.join(dir, name));
-  }
+  await copyFile(icon, path.join(dir, "ic_launcher.png"));
+  await copyFile(icon, path.join(dir, "ic_launcher_round.png"));
+  await copyFile(icon, path.join(dir, "ic_launcher_foreground.png"));
 }
 
 const anyDpi = path.join(androidApp, "res", "mipmap-anydpi-v26");
@@ -97,12 +97,15 @@ await writeFile(
 );
 const adaptive = `<?xml version="1.0" encoding="utf-8"?>
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/ic_launcher_background"/>
-    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>
+    <background android:drawable="@mipmap/ic_launcher_foreground"/>
+    <foreground android:drawable="@android:color/transparent"/>
+    <monochrome android:drawable="@mipmap/ic_launcher_foreground"/>
 </adaptive-icon>
 `;
 await writeFile(path.join(anyDpi, "ic_launcher.xml"), adaptive);
 await writeFile(path.join(anyDpi, "ic_launcher_round.xml"), adaptive);
+await rm(path.join(androidApp, "res", "drawable-v24", "ic_launcher_foreground.xml"), { force: true });
+await rm(path.join(androidApp, "res", "drawable", "ic_launcher_foreground.xml"), { force: true });
 
 const keystoreSrc = path.join(native, "ai-story.keystore");
 const keystoreDest = path.join(androidRoot, "app", "ai-story.keystore");
