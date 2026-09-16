@@ -1,6 +1,7 @@
 import { CapacitorHttp } from "@capacitor/core";
 import { brainFromText, completeChat, generateImage, generateVideo, loadBrainModel, saveBrainModel, type ChatContentPart } from "./api";
 import { cacheChat, cachedChat, dropCachedChat, idbDeleteChat, idbReadChat, idbWriteChat, readLocalChat, writeLocalChat } from "./chat-store";
+import { getPeople, loadPeople, peopleNames, type PersonPack } from "./people-store";
 import { blobToJpegDataUri, isUsableReferenceImage, uuid } from "./media";
 import { AGENT_VIDEO_TABS, emptyTabState, findImage, findVideo } from "./models";
 import { isNativeApp, localFileToDataUri } from "./native";
@@ -145,6 +146,10 @@ export type AgentMemory = {
   recreateShotId: string;
   recreateNote: string;
   hasPickedVideoRefs: boolean;
+  personIds: string[];
+  awaitingTrainName: boolean;
+  awaitingTrainPhotos: boolean;
+  trainName: string;
   messages: AgentMessage[];
 };
 
@@ -165,6 +170,10 @@ export function emptyAgentMemory(): AgentMemory {
     recreateShotId: "",
     recreateNote: "",
     hasPickedVideoRefs: false,
+    personIds: [],
+    awaitingTrainName: false,
+    awaitingTrainPhotos: false,
+    trainName: "",
     messages: [],
   };
 }
@@ -217,6 +226,10 @@ function parseStoredMemory(parsed: AgentMemory): AgentMemory {
     recreateShotId: parsed.recreateShotId || "",
     recreateNote: parsed.recreateNote || "",
     hasPickedVideoRefs: Boolean(parsed.hasPickedVideoRefs),
+    personIds: Array.isArray(parsed.personIds) ? parsed.personIds.filter((id): id is string => typeof id === "string") : [],
+    awaitingTrainName: Boolean(parsed.awaitingTrainName),
+    awaitingTrainPhotos: Boolean(parsed.awaitingTrainPhotos),
+    trainName: parsed.trainName || "",
     messages: Array.isArray(parsed.messages) ? parsed.messages : [],
   });
 }
@@ -443,7 +456,14 @@ export function shotPrompt(lock: AgentLock | null, notes: string, shot: AgentSho
   if (lock?.wardrobe) bits.push(`Keep clothes unless they asked to change them: ${lock.wardrobe}.`);
   if (shot.kind === "video" && shot.useLastFrame) {
     bits.push(
-      "clip-end / last frame is where the previous clip stopped — start this clip from that picture. People photos are the cast, including friends who may not be in that last frame. clip-start is who appeared at the beginning of the last clip. Keep those same people."
+      "Use the attached picture as the first frame. Continue from those exact pixels. Same person, same place, same clothes, same light until the last second. Do not start a new shot of a different person. Do not change location."
+    );
+  }
+  const named = peopleInText(`${brief}\n${notes}\n${shot.prompt}`, getPeople());
+  if (named.length || (shot.useLastFrame && getPeople().length)) {
+    const who = named.length ? named.map((person) => person.name).join(", ") : "the saved people";
+    bits.push(
+      `${who} is already in that first frame. Keep that same face and body. If they turn, it is this same person turning in this place — not a new face and not a bedroom.`
     );
   }
   if (!bits.length) return prompt;
@@ -530,6 +550,8 @@ How to write shot.prompt:
 - If they attached new photos and did not mention the created stills, refs is attached.
 - If they attached no new photos and asked for a video, refs is created — unless they already picked photos.
 - This chat may be one movie. If a movie lock place is given, keep that place, clothes, and people unless they named a change. "part 3", "next clip", "continue the movie", or another video in the same chat is the same movie: refs is both (uploaded people + clip-start/clip-end). clip-end is where the last clip stopped. clip-start is who appeared at the start of the last clip, including friends who are gone by the ending frame.
+- Named saved people: look at their saved photos for face, body, front, and back. Write that into shot.prompt. Wan cannot take a last-frame pin and training photos in the same call. The last frame is the opening frame so it stays the same person. If they ask to turn or show the front, a still of that same person in the last-frame place is made first, then animated.
+- Training photos often come from another room. Never copy those rooms into the movie. If clip-end exists, that place is the whole clip. Do not open or end in a bedroom.
 - Qwen 3.0 Pro can only take 3 reference images. Wan can take 10. If there are more, keep the ones the user cares about most, usually new uploads first.
 - For video, describe the motion they asked in the same explicit way. Always include audible speech and scene sound in the prompt. If they wrote dialog in Sinhala letters, those spoken words in the prompt must stay in Sinhala letters.
 - Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. Video is always 480p. Duration is what they said, else 10s. Wan max 30s per clip.
@@ -580,6 +602,70 @@ export function latestUserText(memory: AgentMemory) {
 
 export function isRememberOnly(text: string) {
   return /^\s*remember\b/i.test(text) && !/\b(make|create|generate|render|video|still|shot|series|clip)\b/i.test(text);
+}
+
+export function isTrainCommand(text: string) {
+  return /^\s*(train|training|save person|save people|learn person)\b/i.test(text.trim());
+}
+
+export function isForgetPerson(text: string) {
+  return /^\s*forget\b/i.test(text.trim());
+}
+
+export function trainNameFrom(text: string) {
+  const cut = text
+    .replace(/^\s*(please\s+)?(train|training|save person|save people|learn person|forget)\b[:\s-]*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cut && !/^(him|her|them|this|that|person|people)$/i.test(cut) ? cut : "";
+}
+
+function nameInText(name: string, text: string) {
+  const n = name.trim();
+  if (n.length < 2) return false;
+  try {
+    return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:$|[^\\p{L}\\p{N}_])`, "iu").test(
+      text
+    );
+  } catch {
+    return text.toLowerCase().includes(n.toLowerCase());
+  }
+}
+
+export function peopleInText(text: string, packs = getPeople()): PersonPack[] {
+  return packs.filter((person) => nameInText(person.name, text));
+}
+
+function peopleForMemory(memory: AgentMemory): PersonPack[] {
+  const packs = getPeople();
+  const text = [memory.brief, memory.notes, ...memory.messages.slice(-8).map((item) => item.text)].join("\n");
+  const named = peopleInText(text, packs);
+  if (named.length) return named;
+  const locked = packs.filter((person) => memory.personIds.includes(person.id));
+  if (locked.length) return locked;
+  const movieFollow =
+    Boolean(memory.lastStill) ||
+    memory.createdStills.some((img) => img.name === CLIP_START || img.name === CLIP_END);
+  return movieFollow && packs.length === 1 ? packs : [];
+}
+
+function personPhotoIdSet() {
+  return new Set(getPeople().flatMap((person) => person.photos.map((img) => img.id)));
+}
+
+function isPersonPackPhoto(img: LocalImage) {
+  return personPhotoIdSet().has(img.id);
+}
+
+function personRefImages(memory: AgentMemory, max: number) {
+  const packs = peopleForMemory(memory);
+  if (!packs.length) return [] as LocalImage[];
+  const per = packs.length >= 3 ? 1 : packs.length === 2 ? 2 : Math.min(3, max);
+  const out: LocalImage[] = [];
+  for (const pack of packs) {
+    for (const img of pack.photos.slice(0, per)) pushRef(out, img);
+  }
+  return out.slice(0, max);
 }
 
 export function isContinue(text: string) {
@@ -1116,7 +1202,8 @@ function pickRefSource(
   return "user";
 }
 
-export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLock; shots: AgentShot[]; reply: string }> {
+export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLock; shots: AgentShot[]; reply: string; personIds: string[] }> {
+  await loadPeople();
   const brief = latestUserText(memory);
   if (brief.length < 2) throw new Error("Type what you want in the chat.");
 
@@ -1139,12 +1226,22 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     ? await plannerImages(userRefs, 10, "selected in tap order")
     : await plannerLibrary(library);
   const createdParts = picked || library.length ? [] : memory.createdStills.length ? await plannerImages(memory.createdStills, 6, "created earlier in this chat") : [];
+  const namedPeople = peopleInText(`${brief}\n${memory.notes}\n${history}`);
+  const personIds = [...new Set([...memory.personIds, ...namedPeople.map((person) => person.id), ...peopleForMemory(memory).map((person) => person.id)])];
+  const savedPacks = getPeople().filter((person) => personIds.includes(person.id));
+  const personParts = savedPacks.length
+    ? await plannerImages(
+        savedPacks.flatMap((person) => person.photos.slice(0, 3)),
+        6,
+        "saved person — face, body, front, back only. Ignore this room. Last-frame side view is the real place"
+      )
+    : [];
   if ((picked ? userRefs : library).length && !uploadedParts.some((part) => part.type === "image_url")) {
     throw new Error("Could not encode the photos as JPEG Base64 for Gemini. Attach them again.");
   }
   const text = [
     picked
-      ? `The user picked ${memory.chosenRefs.length} photo(s) in tap order. These are the ONLY references. First tapped is the first image, second tapped is the second image, and so on. Do not add other stills.`
+      ? `The user picked ${memory.chosenRefs.length} photo(s) in tap order. First tapped is the starting frame. Attach saved-person photos AFTER that as identity only. A picked last-frame side view is pose/camera in the current place — do not replace that place with a training-photo room.`
       : library.length
         ? `Photos on the bar, numbered as the user sees them: ${library.map((photo) => `${photo.label}=${photo.kind}`).join(", ")}.`
         : "No photos on the bar.",
@@ -1156,8 +1253,13 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
         : "",
     memory.notes.trim() ? `Remembered facts from the user (do not add extra):\n${memory.notes.trim()}` : "",
     memory.lock?.atmosphere ? `Movie lock — keep this place unless they named a change: ${memory.lock.atmosphere}.` : "",
+    savedPacks.length
+      ? `Saved people for this job: ${savedPacks.map((person) => person.name).join(", ")}. You can see their photos. Write face, body, front, and back into shot.prompt. Wan will not get those training pixels when a last frame exists. A last-frame side view is pose/camera in the CURRENT place from start to end — never open or finish in a training-photo room.`
+      : peopleNames().length
+        ? `Saved people available: ${peopleNames().join(", ")}. Use them if the user names them.`
+        : "",
     shouldContinueMovie(memory, brief)
-      ? "This is the next part of the same movie. Keep the same people photos. Use clip-end as the starting picture. Keep friends from the people photos and from clip-start even if they are missing from clip-end."
+      ? "This is the next part of the same movie. clip-end is the only place picture. Keep friends from clip-start even if they are missing from clip-end. Do not change location to match a training photo at the start or the end."
       : "",
     history ? `Recent chat:\n${history}` : "",
     SINHALA.test(brief)
@@ -1171,7 +1273,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
   const askedBrain = brainFromText(brief);
   if (askedBrain) saveBrainModel(askedBrain);
   const brain = askedBrain || loadBrainModel();
-  const content: ChatContentPart[] = [{ type: "text", text }, ...uploadedParts, ...createdParts];
+  const content: ChatContentPart[] = [{ type: "text", text }, ...personParts, ...uploadedParts, ...createdParts];
   let raw = await completeChat(PLAN_SYSTEM, content, 4096, brain, 0.55);
   let parsed = parsePlanJson(raw);
   if (!(parsed.shots || []).length && askedToGenerate(brief)) {
@@ -1302,6 +1404,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
   return {
     lock,
     reply,
+    personIds,
     shots: !memory.hasPickedVideoRefs && shots.some((shot) => shot.refSource === "created")
       ? assignCreatedStillFrames(shots, memory.createdStills)
       : shots,
@@ -1313,22 +1416,36 @@ function pushRef(out: LocalImage[], img: LocalImage | null | undefined) {
   out.push(img);
 }
 
+function withPersonRefs(memory: AgentMemory, images: LocalImage[], max: number, sceneFirst: boolean) {
+  const scene = images.filter((img) => !isPersonPackPhoto(img));
+  const out: LocalImage[] = [];
+  if (sceneFirst) {
+    for (const img of scene) pushRef(out, img);
+    return out.slice(0, Math.max(1, max));
+  }
+  for (const img of personRefImages(memory, max)) pushRef(out, img);
+  for (const img of scene) {
+    if (out.length >= max) break;
+    pushRef(out, img);
+  }
+  return out.slice(0, Math.max(1, max));
+}
+
 function movieCastRefs(memory: AgentMemory, max: number) {
-  const people = (memory.userRefs.length ? memory.userRefs : memory.images).filter((img) => isUsableReferenceImage(img.dataUri));
+  const people = (memory.userRefs.length ? memory.userRefs : memory.images).filter(
+    (img) => isUsableReferenceImage(img.dataUri) && !isPersonPackPhoto(img)
+  );
   const start = memory.createdStills.find((img) => img.name === CLIP_START);
   const end =
     memory.lastStill ||
     memory.createdStills.find((img) => img.name === CLIP_END);
   const extras = memory.createdStills.filter((img) => img.name !== CLIP_START && img.name !== CLIP_END);
-  const out: LocalImage[] = [];
-  for (const img of people) pushRef(out, img);
-  pushRef(out, end);
-  pushRef(out, start);
-  for (const img of extras) {
-    if (out.length >= max) break;
-    pushRef(out, img);
-  }
-  return out.slice(0, Math.max(1, max));
+  const scene: LocalImage[] = [];
+  pushRef(scene, end);
+  pushRef(scene, start);
+  for (const img of extras) pushRef(scene, img);
+  for (const img of people) pushRef(scene, img);
+  return withPersonRefs(memory, scene, max, true);
 }
 
 function refsForShot(memory: AgentMemory, shot: AgentShot) {
@@ -1344,7 +1461,12 @@ function refsForShot(memory: AgentMemory, shot: AgentShot) {
     return combined.slice(0, Math.max(1, max));
   }
   if (memory.hasPickedVideoRefs) {
-    return memory.chosenRefs.filter((img) => isUsableReferenceImage(img.dataUri)).slice(0, Math.max(1, max));
+    return withPersonRefs(
+      memory,
+      memory.chosenRefs.filter((img) => isUsableReferenceImage(img.dataUri)),
+      max,
+      shot.kind === "video"
+    );
   }
   if (
     shot.kind === "video" &&
@@ -1359,13 +1481,18 @@ function refsForShot(memory: AgentMemory, shot: AgentShot) {
     for (const still of memory.createdStills) {
       if (isUsableReferenceImage(still.dataUri) && !combined.some((img) => img.id === still.id)) combined.push(still);
     }
-    return combined.slice(0, Math.max(1, max));
+    return withPersonRefs(memory, combined, max, shot.kind === "video" || Boolean(memory.lastStill));
   }
   if (shot.refSource === "user") {
-    return uploads.slice(0, Math.max(1, max));
+    return withPersonRefs(memory, uploads, max, shot.kind === "video" && Boolean(memory.lastStill || shot.useLastFrame));
   }
   if (shot.refSource === "created" && !shot.frameStillIds.length && !shot.useLastFrame) {
-    return memory.createdStills.filter((img) => isUsableReferenceImage(img.dataUri)).slice(0, Math.max(1, max));
+    return withPersonRefs(
+      memory,
+      memory.createdStills.filter((img) => isUsableReferenceImage(img.dataUri)),
+      max,
+      shot.kind === "video"
+    );
   }
   const frames: LocalImage[] = [];
   if (shot.useLastFrame && memory.lastStill && isUsableReferenceImage(memory.lastStill.dataUri)) {
@@ -1377,7 +1504,7 @@ function refsForShot(memory: AgentMemory, shot: AgentShot) {
       frames.push(still);
     }
   }
-  return frames.slice(0, Math.max(1, max));
+  return withPersonRefs(memory, frames, max, true);
 }
 
 async function fetchImageBlob(url: string): Promise<Blob | null> {
@@ -1497,18 +1624,69 @@ function upsertClipStills(existing: LocalImage[], start: LocalImage | null, end:
   return next;
 }
 
+function needsUnseenAngle(text: string) {
+  return /\b(turn\w*|facing|face the|to the front|from the front|from the back|look at (the )?camera|towards? (the )?camera|හරව|ඉස්සරහට|මුහුණ)\b/i.test(
+    text
+  );
+}
+
+function clipEndImage(memory: AgentMemory) {
+  const end = memory.lastStill || memory.createdStills.find((img) => img.name === CLIP_END);
+  return end && isUsableReferenceImage(end.dataUri) ? end : null;
+}
+
+function identityOnScenePrompt(memory: AgentMemory, action: string) {
+  const who = peopleForMemory(memory).map((person) => person.name).join(", ") || "the same person";
+  return [
+    `The last image is the current scene. Keep that exact place, clothes, lighting, and camera world.`,
+    `The earlier images are ${who} from other angles — same face, same body, same hair, same skin.`,
+    `One still of ${who} in the last image's place, matching: ${action}.`,
+    `Same face as those photos and as the person already in the last image. Do not invent a new person.`,
+    `Ignore any bedroom, bed, wall, or indoor light in the earlier images. Those rooms must not appear.`,
+  ].join(" ");
+}
+
+async function firstFrameForVideo(
+  memory: AgentMemory,
+  shot: AgentShot,
+  prompt: string,
+  onProgress?: (n: number) => void
+): Promise<LocalImage | null> {
+  const end = clipEndImage(memory);
+  if (!end) return null;
+  const packs = personRefImages(memory, 2);
+  if (!packs.length || !needsUnseenAngle(`${memory.brief}\n${shot.prompt}\n${prompt}`)) return end;
+  const still = await generateImage(
+    defaultImageModel(),
+    {
+      ...emptyTabState("image"),
+      images: [...packs, end].slice(0, 3),
+      prompt: identityOnScenePrompt(memory, shot.prompt || memory.brief),
+      aspect: "16:9" as Aspect,
+      quality: "high",
+      enhancePrompt: false,
+      safety: false,
+    },
+    onProgress
+  );
+  return (await resultToStill(still)) || end;
+}
+
 export async function runAgentShot(
   memory: AgentMemory,
   shotId: string,
   onProgress?: (n: number) => void
 ): Promise<AgentMemory> {
+  await loadPeople();
   const shot = memory.shots.find((item) => item.id === shotId);
   if (!shot) throw new Error("Shot missing.");
   const images = refsForShot(memory, shot);
   const prompt = shotPrompt(memory.lock, memory.notes, shot, memory.brief);
+  const wanFrame = shot.kind === "video" ? await firstFrameForVideo(memory, shot, prompt, onProgress) : null;
   const state: TabState = {
     ...emptyTabState(shot.kind),
-    images,
+    images: wanFrame ? [wanFrame] : images,
+    wanFrames: wanFrame ? [wanFrame] : undefined,
     prompt,
     aspect: (shot.kind === "video" ? "16:9" : "3:4") as Aspect,
     quality: "high",

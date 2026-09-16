@@ -12,7 +12,10 @@ import {
   isContinue,
   continueStatus,
   isRecreate,
+  isForgetPerson,
   isRememberOnly,
+  isTrainCommand,
+  trainNameFrom,
   lastActionableShot,
   listAgentChats,
   loadAgentMemory,
@@ -38,6 +41,7 @@ import {
 import { downloadResult } from "./api";
 import { withKeepAlive } from "./keep-alive";
 import { fileToDataUri, uuid } from "./media";
+import { forgetPerson, getPeople, loadPeople, peopleNames, savePerson } from "./people-store";
 import { isNativeApp, pickGalleryImages } from "./native";
 import type { LocalImage, ResultKind, StudioResult } from "./types";
 
@@ -72,7 +76,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
 
   useEffect(() => {
     let alive = true;
-    void loadAgentMemory().then((next) => {
+    void Promise.all([loadAgentMemory(), loadPeople()]).then(([next]) => {
       if (!alive) return;
       memoryRef.current = next;
       setMemory(next);
@@ -366,13 +370,120 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     commit(removeLibraryPhoto(memoryRef.current, id));
   }
 
+  function trainSavedText(name: string, count: number) {
+    return `Saved ${name} with ${count} photo${count === 1 ? "" : "s"}. The next clip starts on the last frame so it stays this ${name}. If you ask them to turn, I paint that same person onto that place first — bedroom photos never become a second location.`;
+  }
+
+  async function handleTrain(current: AgentMemory, text: string, images: LocalImage[]) {
+    const reply = (next: AgentMemory, message: string) => {
+      commit(
+        pushMessage(next, {
+          id: uuid(),
+          role: "assistant",
+          text: message,
+          createdAt: Date.now(),
+        })
+      );
+      return true as const;
+    };
+    const finish = async (name: string, photos: LocalImage[]) => {
+      const person = await savePerson(name, photos);
+      return reply(
+        {
+          ...current,
+          awaitingTrainName: false,
+          awaitingTrainPhotos: false,
+          trainName: "",
+          personIds: [...new Set([...current.personIds, person.id])],
+        },
+        trainSavedText(person.name, person.photos.length)
+      );
+    };
+
+    if (isForgetPerson(text)) {
+      const name = trainNameFrom(text);
+      if (!name) {
+        const known = peopleNames();
+        return reply(current, known.length ? `Who should I forget? You have ${known.join(", ")}.` : "No saved people yet.");
+      }
+      await forgetPerson(name);
+      return reply(
+        { ...current, personIds: current.personIds.filter((id) => getPeople().some((person) => person.id === id)) },
+        `Forgot ${name}.`
+      );
+    }
+
+    if (current.awaitingTrainName) {
+      if (askedForVideo(text) && !isTrainCommand(text)) {
+        commit({ ...current, awaitingTrainName: false, awaitingTrainPhotos: false, trainName: "" });
+        return false;
+      }
+      const name = trainNameFrom(text) || (!isTrainCommand(text) ? text.trim() : "");
+      if (!name) return reply({ ...current, awaitingTrainName: true }, "What name should I save these photos under?");
+      if (images.length) return finish(name, images);
+      return reply(
+        { ...current, awaitingTrainName: false, awaitingTrainPhotos: true, trainName: name },
+        `Okay, ${name}. Send 2–3 photos: front, side, and back if you have them. That way a side-view last frame still knows the rest of the body.`
+      );
+    }
+
+    if (current.awaitingTrainPhotos) {
+      if (images.length) return finish(current.trainName || trainNameFrom(text) || "Person", images);
+      const maybeName = trainNameFrom(text) || (!isTrainCommand(text) && !askedForVideo(text) ? text.trim() : "");
+      if (maybeName && !askedForVideo(text)) {
+        return reply(
+          { ...current, trainName: maybeName, awaitingTrainPhotos: true },
+          `Okay, ${maybeName}. Still need photos — front, side, and back if you have them.`
+        );
+      }
+      if (askedForVideo(text)) {
+        commit({ ...current, awaitingTrainName: false, awaitingTrainPhotos: false, trainName: "" });
+        return false;
+      }
+      return reply(
+        current,
+        `Still waiting for photos of ${current.trainName || "that person"}. Front, side, and back work best.`
+      );
+    }
+
+    if (!isTrainCommand(text)) return false;
+
+    const name = trainNameFrom(text);
+    if (name && images.length) return finish(name, images);
+    if (name) {
+      return reply(
+        { ...current, awaitingTrainName: false, awaitingTrainPhotos: true, trainName: name },
+        `Okay, ${name}. Send 2–3 photos: front, side, and back if you have them. That way a side-view last frame still knows the rest of the body.`
+      );
+    }
+    if (images.length) {
+      return reply(
+        { ...current, awaitingTrainName: true, awaitingTrainPhotos: false, trainName: "" },
+        "What name should I save these photos under?"
+      );
+    }
+    const known = peopleNames();
+    return reply(
+      { ...current, awaitingTrainName: true, awaitingTrainPhotos: false, trainName: "" },
+      known.length ? `Who are we training? You already have ${known.join(", ")}.` : "What is the person's name?"
+    );
+  }
+
   async function planAndRun(current: AgentMemory) {
     setProgress("Planning…");
     const planned = await planAgentJob(current);
     if (!planned.shots.length) {
       commit(
         pushMessage(
-          { ...current, waitingForApproval: false, awaitingVideoRefs: false, awaitingRecreate: false, recreateShotId: "", recreateNote: "" },
+          {
+            ...current,
+            personIds: planned.personIds,
+            waitingForApproval: false,
+            awaitingVideoRefs: false,
+            awaitingRecreate: false,
+            recreateShotId: "",
+            recreateNote: "",
+          },
           {
             id: uuid(),
             role: "assistant",
@@ -388,6 +499,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       {
         ...current,
         lock: planned.lock,
+        personIds: planned.personIds,
         shots: [...kept, ...planned.shots],
         waitingForApproval: true,
         awaitingVideoRefs: false,
@@ -470,6 +582,10 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       );
       return;
     }
+
+    const trained = await handleTrain(current, userMessage.text, images);
+    if (trained) return;
+    current = memoryRef.current;
 
     if (images.length) {
       current = {

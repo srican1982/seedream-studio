@@ -38,6 +38,7 @@ export type StudioResult = {
 
 export type TabState = {
   images: LocalImage[];
+  wanFrames?: LocalImage[];
   prompt: string;
   aspect: Aspect;
   quality: Quality;

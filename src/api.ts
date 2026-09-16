@@ -654,7 +654,16 @@ export async function generateVideo(
   };
 
   if (VIDEO_WAN_MODELS.includes(tab)) {
-    if (images.length) {
+    const frames = (state.wanFrames || []).map((img) => img.dataUri).filter(isUsableReferenceImage);
+    if (frames.length) {
+      task.inputs = {
+        frameImages: frames.slice(0, 2).map((image, index) => ({
+          image,
+          frame: frames.length === 1 || index === 0 ? "first" : "last",
+        })),
+      };
+      task.resolution = resolution;
+    } else if (images.length) {
       task.inputs = { referenceImages: images };
       task.resolution = resolution;
     } else {
