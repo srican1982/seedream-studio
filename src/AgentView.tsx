@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } fro
 import {
   VIDEO_REF_LIMIT,
   askedForVideo,
+  askedToGenerate,
   applyRecreateEdits,
   approvalText,
   activeChatId,
@@ -542,7 +543,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     }
   }
 
-  async function onSend(preset?: string) {
+  async function onSend(preset?: string, asRecreate = false) {
     const text = (preset ?? draft).trim();
     const recreating = memoryRef.current.awaitingRecreate && Boolean(recreateShot(memoryRef.current, ""));
     if ((!text && pending.length === 0 && !recreating) || busy) return;
@@ -629,18 +630,16 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       return;
     }
 
-    if (current.awaitingRecreate && images.length && askedForVideo(userMessage.text)) {
-      current = { ...current, awaitingRecreate: false, recreateShotId: "", recreateNote: "" };
-      commit(current);
-    } else if (current.awaitingRecreate && !images.length && recreateShot(current, userMessage.text)) {
-      await finishRecreate(current, userMessage.text, images);
+    if (current.awaitingRecreate && (asRecreate || isRecreate(userMessage.text))) {
+      await finishRecreate(current, userMessage.text || "recreate this", images);
       return;
-    } else if (current.awaitingRecreate) {
+    }
+    if (current.awaitingRecreate) {
       current = { ...current, awaitingRecreate: false, recreateShotId: "", recreateNote: "", waitingForApproval: false };
       commit(current);
     }
 
-    if (current.awaitingVideoRefs && !isRecreate(userMessage.text)) {
+    if (current.awaitingVideoRefs && !isRecreate(userMessage.text) && !asRecreate) {
       if (isContinue(userMessage.text) || /use these/i.test(userMessage.text)) {
         current = { ...current, awaitingVideoRefs: false, hasPickedVideoRefs: true };
         commit(current);
@@ -663,7 +662,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         }
         return;
       }
-      if (askedForVideo(userMessage.text)) {
+      if (askedToGenerate(userMessage.text)) {
         askForVideoPhotos(current, images);
         return;
       }
@@ -687,7 +686,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       return;
     }
 
-    if (askedForVideo(userMessage.text) && !isContinue(userMessage.text) && !(isRecreate(userMessage.text) && !images.length)) {
+    if (askedToGenerate(userMessage.text) && !isContinue(userMessage.text) && !asRecreate && !(isRecreate(userMessage.text) && !images.length)) {
       askForVideoPhotos(current, images);
       return;
     }
@@ -878,7 +877,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
               <button
                 className="photo-use"
                 type="button"
-                onClick={() => (recreating ? void onSend(draft || "recreate this") : void usePickedPhotos())}
+                onClick={() => (recreating ? void onSend(draft || "recreate this", true) : void usePickedPhotos())}
               >
                 {recreating ? "Recreate" : "Use these"}
               </button>
@@ -986,7 +985,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
               <button className="ghost-btn" type="button" onClick={() => void pickPhotos()}>
                 Change photos
               </button>
-              <button type="button" onClick={() => void onSend(draft || "recreate this")}>
+              <button type="button" onClick={() => void onSend(draft || "recreate this", true)}>
                 Recreate
               </button>
             </div>

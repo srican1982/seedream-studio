@@ -338,8 +338,8 @@ export function wanSize(aspect: Aspect, resolution: "480p" | "720p" | "1080p") {
 export function wanPositivePrompt(prompt: string, audio: boolean) {
   const text = prompt.trim();
   if (!audio) return text;
-  if (/\b(audio|sound|speech|says|said|saying|dialogue|voice|foley|ambience|ambient|spoken)\b/i.test(text)) return text;
-  return `${text} Include audible speech, room ambience, and Foley that match the scene.`;
+  if (/\b(audio|sound|speech|says|said|saying|speak|dialogue|voice|foley|ambience|ambient|spoken)\b/i.test(text)) return text;
+  return `${text} Include room ambience and Foley that match the scene. Do not add spoken words or dialogue.`;
 }
 
 const QWEN_REF_MAX_PIXELS = 2_250_000;

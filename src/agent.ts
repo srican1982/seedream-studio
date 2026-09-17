@@ -459,6 +459,9 @@ export function shotPrompt(lock: AgentLock | null, notes: string, shot: AgentSho
       "Use the attached picture as the first frame. Continue from those exact pixels. Same person, same place, same clothes, same light until the last second. Do not start a new shot of a different person. Do not change location."
     );
   }
+  if (shot.kind === "video" && !askedForSpokenWords(brief)) {
+    bits.push("No spoken dialogue. Do not have anyone say the user's Sinhala, Singlish, or English instructions. Scene sound only.");
+  }
   const named = peopleInText(`${brief}\n${notes}\n${shot.prompt}`, getPeople());
   if (named.length || (shot.useLastFrame && getPeople().length)) {
     const who = named.length ? named.map((person) => person.name).join(", ") : "the saved people";
@@ -490,9 +493,19 @@ function applyPoseIdentityLock(prompt: string, identityCount = 1) {
 
 const SINHALA = /[\u0D80-\u0DFF]/;
 
+function askedForSpokenWords(text: string) {
+  return (
+    /\b(say|says|said|saying|speak|speaks|speaking|spoken|dialogue|dialog|voiceover|voice over|lines?\s*:)\b/i.test(text) ||
+    /කියන්න|කියලා\s*දෙන්න|මේ\s*(වචන|කතාව)|බයන/.test(text)
+  );
+}
+
 function sinhalaDialogs(text: string) {
+  if (!askedForSpokenWords(text)) return [] as string[];
   const quoted = [...text.matchAll(/[“"']([^“"']*[\u0D80-\u0DFF][^“"']*)[”"']/g)].map((m) => m[1].trim());
-  const runs = [...text.matchAll(/[\u0D80-\u0DFF][^\n]*/g)].map((m) => m[0].trim()).filter((item) => item.length >= 2);
+  const afterSay = text.split(/\b(?:say|says|said|saying|speak|speaks|speaking)\b|කියන්න\s*:?/i).slice(1).join(" ");
+  const source = quoted.length ? quoted.join("\n") : afterSay || text;
+  const runs = [...source.matchAll(/[\u0D80-\u0DFF][^\n]*/g)].map((m) => m[0].trim()).filter((item) => item.length >= 2);
   const out: string[] = [];
   for (const item of [...quoted, ...runs]) {
     if (item && !out.some((kept) => kept.includes(item) || item.includes(kept))) out.push(item);
@@ -525,7 +538,9 @@ Then write the exact prompt that will be sent to Qwen 3.0 Pro (images) or Wan (v
 How to write shot.prompt:
 - First understand them the way you would in a normal Gemini chat: slang, Sinhala, shorthand, sex-position names, and what they mean by the attached photos.
 - Write the picture and motion in clear, explicit English so Qwen or Wan understand bodies, camera, and action. If they name a position, act, or pose, describe the bodies: who is where, limbs, facing, contact, and the action. Qwen and Wan often do not know the name. You do. Write the picture.
-- Spoken dialog is different. If they typed spoken lines in Sinhala letters (සිංහල), copy those exact Sinhala letters into shot.prompt as the words that are said. Do not translate that dialog into English. Do not romanize it into English letters (never write "mama" for මම). Scene description stays English. Only the spoken words they wrote in Sinhala stay in Sinhala.
+- Sinhala, Singlish, and English in the chat are DIRECTIONS to you, not lines for the characters. Translate the scene into English for Qwen/Wan. Do not have anyone speak the user's instructions.
+- Spoken words only if they clearly asked to say/speak them ("say", "speak", "dialogue", "කියන්න", or quoted lines meant to be said). Then copy those exact words. Sinhala spoken words stay in Sinhala letters. Do not romanize them.
+- If they did not ask for spoken words, put no dialogue in shot.prompt. No invented lines. Scene sound is fine.
 - Keep every concrete detail they said. Keep their adult wording. Be direct and sexual when they are.
 - Clothing, lighting, and location: if they named a change, follow that. If they did not, tell Qwen or Wan to keep the same clothes, same lighting, and same place as the first image (or the photo they pointed at). Do not invent a new room, new light, or new outfit.
 - Describing the act or position they asked for is not inventing. Changing the photo's clothes, light, or place without them asking is inventing.
@@ -553,7 +568,7 @@ How to write shot.prompt:
 - Named saved people: look at their saved photos for face, body, front, and back. Write that into shot.prompt. Wan cannot take a last-frame pin and training photos in the same call. The last frame is the opening frame so it stays the same person. If they ask to turn or show the front, a still of that same person in the last-frame place is made first, then animated.
 - Training photos often come from another room. Never copy those rooms into the movie. If clip-end exists, that place is the whole clip. Do not open or end in a bedroom.
 - Qwen 3.0 Pro can only take 3 reference images. Wan can take 10. If there are more, keep the ones the user cares about most, usually new uploads first.
-- For video, describe the motion they asked in the same explicit way. Always include audible speech and scene sound in the prompt. If they wrote dialog in Sinhala letters, those spoken words in the prompt must stay in Sinhala letters.
+- For video, describe the motion they asked in the same explicit way. Include scene sound. Add spoken words only if they asked someone to say them.
 - Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. Video is always 480p. Duration is what they said, else 10s. Wan max 30s per clip.
 
 If they are only chatting, return shots: [] and put your answer in reply.
@@ -592,8 +607,8 @@ function cleanReply(text: string) {
   return next.replace(/\{[\s\S]*$/, "").trim();
 }
 
-function askedToGenerate(text: string) {
-  return askedForVideo(text) || /\b(make|create|generate|image|photo|still|picture|render|හදන්න)\b/i.test(text);
+export function askedToGenerate(text: string) {
+  return askedForVideo(text) || /\b(make|create|generate|image|photo|still|picture|render)\b/i.test(text) || /හදන්න/.test(text);
 }
 
 export function latestUserText(memory: AgentMemory) {
@@ -882,7 +897,8 @@ export function beginRecreate(memory: AgentMemory, shot: AgentShot, note = ""): 
 
 const REVISE_SYSTEM = `You revise a prompt for Qwen 3.0 Pro (images) or Wan (video). Keep the whole scene the same except the user's requested change.
 Return only the revised prompt. No title, no quotes, no markdown, no explanation.
-If they typed spoken dialog in Sinhala letters, those spoken words must stay in those exact Sinhala letters. Do not romanize.
+If they typed spoken dialog in Sinhala letters after asking someone to say it, those spoken words must stay in those exact Sinhala letters. Do not romanize.
+If they did not ask for spoken words, do not add dialogue.
 Scene and action stay in clear English unless they asked otherwise.`;
 
 export async function applyRecreateEdits(
@@ -1031,7 +1047,7 @@ function askedForBoth(text: string) {
 }
 
 export function askedForVideo(text: string) {
-  return /\b(video|videos|clip|clips|animate|animation|movie|film|වීඩියෝ|වීඩියෝව|ක්ලිප්)\b/i.test(text);
+  return /\b(video|videos|clip|clips|animate|animation|movie|film)\b/i.test(text) || /වීඩියෝ|වීඩියෝව|ක්ලිප්/.test(text);
 }
 
 export function askedForPeopleAndPose(text: string) {
@@ -1304,7 +1320,9 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
       : "",
     history ? `Recent chat:\n${history}` : "",
     SINHALA.test(brief)
-      ? "The latest request has Sinhala letters. Any spoken dialog they typed in Sinhala must stay in those exact Sinhala letters in shot.prompt. Do not convert those spoken words to English letters."
+      ? askedForSpokenWords(brief)
+        ? "They asked for spoken words. Copy those exact Sinhala letters into shot.prompt as dialogue. Do not romanize."
+        : "This request has Sinhala or Singlish as instructions only. Write the scene in English. Do not make anyone speak those Sinhala or Singlish words."
       : "",
     `Latest request:\n${brief}`,
   ]
