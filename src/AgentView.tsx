@@ -730,7 +730,6 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
   const library = photoLibrary(memory, pending);
   const recreating = memory.awaitingRecreate && !busy && Boolean(recreateShot(memory, ""));
   const picking = (memory.awaitingVideoRefs || memory.awaitingRecreate) && !busy;
-  const showTrain = !busy && !memory.awaitingTrainName && !memory.awaitingTrainPhotos;
   const showApprove = memory.waitingForApproval && !busy && !memory.awaitingVideoRefs && lastActionableShot(memory);
   const recreateKind = memory.shots.find((item) => item.id === memory.recreateShotId)?.kind || "video";
   const photoLimit = recreating ? recreateRefLimit(recreateKind) : VIDEO_REF_LIMIT;
@@ -890,7 +889,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Ask anything in Sinhala or English. Tap Train person to save a face and body. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime at 480p. Type Wan 3.0, Grok, or Gemini 2.5 Pro if you want a different model. I’ll do one piece at a time so you can continue or recreate.</p>
+            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime at 480p. Type Wan 3.0, Grok, or Gemini 2.5 Pro if you want a different model. I’ll do one piece at a time so you can continue or recreate.</p>
           </div>
         ) : (
           memory.messages.map((message) => (
@@ -990,23 +989,14 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
               </button>
             </div>
           </div>
-        ) : showTrain || showApprove ? (
+        ) : showApprove ? (
           <div className="chat-approve">
-            {showTrain ? (
-              <button type="button" onClick={() => void onSend("training")}>
-                Train person
-              </button>
-            ) : null}
-            {showApprove ? (
-              <>
-                <button type="button" onClick={() => void onSend("continue")}>
-                  Continue
-                </button>
-                <button type="button" onClick={() => void onSend("recreate this")}>
-                  Recreate this
-                </button>
-              </>
-            ) : null}
+            <button type="button" onClick={() => void onSend("continue")}>
+              Continue
+            </button>
+            <button type="button" onClick={() => void onSend("recreate this")}>
+              Recreate this
+            </button>
           </div>
         ) : null}
         {pending.length > 0 ? (
