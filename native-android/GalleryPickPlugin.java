@@ -1,5 +1,6 @@
 package studio.seedream.agent;
 
+import android.app.Activity;
 import android.content.ClipData;
 import android.content.ContentResolver;
 import android.content.Intent;
