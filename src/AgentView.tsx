@@ -382,19 +382,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       );
       return;
     }
-    const note = step.dropped
-      ? "Wan cannot take start/end frames and a ref video/audio together. I kept your frames and skipped the clip/song."
-      : "";
-    commit(
-      note
-        ? pushMessage(step.memory, {
-            id: uuid(),
-            role: "assistant",
-            text: note,
-            createdAt: Date.now(),
-          })
-        : step.memory
-    );
+    commit(step.memory);
     setBusy(true);
     setProgress(null);
     try {
@@ -426,12 +414,12 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       : current.awaitingRecreate
         ? recreateRefLimit(shot?.kind || "video")
         : VIDEO_REF_LIMIT;
-    if (limit <= 1) {
-      commit({ ...current, chosenRefs: [photo.image] });
-      return;
+    const nextChosen = limit <= 1 ? [photo.image] : current.chosenRefs.length >= limit ? current.chosenRefs : [...current.chosenRefs, photo.image];
+    if (limit > 1 && current.chosenRefs.length >= limit) return;
+    commit({ ...current, chosenRefs: nextChosen });
+    if (quiz && current.attachQuiz === "frames" && nextChosen.length >= quizStepLimit("frames")) {
+      void finishQuizStep();
     }
-    if (current.chosenRefs.length >= limit) return;
-    commit({ ...current, chosenRefs: [...current.chosenRefs, photo.image] });
   }
 
   function removeChosen(id: string) {
@@ -1078,7 +1066,9 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                 : memory.attachQuiz === "size"
                   ? "Tap a size below, or Skip / None."
                   : quiz
-                    ? "Attach files if you want, or tap Skip / None."
+                    ? memory.attachQuiz === "frames"
+                      ? "Tap a frame to skip refs, or Skip to refs."
+                      : "Attach files if you want, or tap Skip / None."
                     : "No photos yet. Attach some, or tap Skip / None."}
             </p>
           )}
@@ -1126,7 +1116,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. After a video, tap what to send: frames 0–2, ref photos 0–2, ref video 0–1, ref audio 0–1, then size.</p>
+            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. Tap a frame and refs are skipped. Skip frames to pick ref photos, video, or audio instead.</p>
           </div>
         ) : (
           memory.messages.map((message) => (

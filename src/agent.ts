@@ -640,7 +640,7 @@ Adult content:
 - Consensual adult sexual content between adults 18 or older is allowed. Never include minors or anyone who appears under 18.
 - Do not lecture, moralize, refuse, or add safety sermons. Keep their explicit wording.
 
-- The photos are attached as JPEG Base64 right after their labels. Look at the pixels AND the label. Frame 1 / Frame 2 are timeline pins. Image 1 / Image 2 are people. Photo N on the bar is unlabeled unless a Frame/Image line already named it. Do not move a people photo into frames.
+- The photos are attached as JPEG Base64 right after their labels. Look at the pixels AND the label. Frame 1 / Frame 2 are timeline pins. Image 1 / Image 2 are people. Photo N on the bar is unlabeled unless a Frame/Image line already named it. Wan can take frames OR reference photos, never both in one call. Do not move a people photo into frames.
 
 Then write the exact prompt that will be sent to Qwen 3.0 Pro (images) or Wan (video). That prompt is the whole job. Qwen and Wan will not see this chat — they only get your written prompt plus the reference pixels. You must turn what you understood from the words and the photos into better generator language.
 
@@ -654,8 +654,8 @@ How to write shot.prompt:
 - Clothing, lighting, and location: if they named a change, follow that. If they did not, tell Qwen or Wan to keep the same clothes, same lighting, and same place as the first image (or the photo they pointed at). Do not invent a new room, new light, or new outfit.
 - Describing the act or position they asked for is not inventing. Changing the photo's clothes, light, or place without them asking is inventing.
 - If they pointed at photos, use the bar numbers they said, and keep those roles.
-- If they already finished the attach quiz, those taps are the ONLY Wan slots. Do not move a people photo into frames or a frame into people. Do not add other stills.
-- Frame 1 is the first frame of the video. Frame 2 is the last frame. Image 1 / Image 2 are people references, not timeline pins.
+- If they already finished the attach quiz, those taps are the ONLY Wan slots. Frames path = Frame 1/2 only, no people/video/audio. Refs path = Image 1/2 + Video 1 + Audio 1, no frames. Never both. Do not add other stills.
+- Frame 1 is the first frame of the video. Frame 2 is the last frame. Image 1 / Image 2 are people references, not timeline pins. If frames exist, ignore people/video/audio for Wan.
 - If Video 1 is attached, you cannot watch it. Still write motion to follow Video 1. If Audio 1 is attached, you cannot hear it. Still write that the soundtrack follows Audio 1. If none, do not invent a file.
 - If they already picked photos in tap order for a still (not the Wan quiz), those are the ONLY references. refs must be attached. First tapped is the first image, second tapped is the second image. Do not add other stills.
 - If they name some photos for the people and other photos for poses, follow what they said. Do not assume photo 1 is people or photo 2 is pose unless they said that.
@@ -1263,19 +1263,19 @@ export function isQuizAdvance(text: string) {
 
 export function attachQuizQuestion(step: AttachQuizStep) {
   if (step === "frames") {
-    return "Question 1/5 — Frames: tap 0, 1, or 2 photos. First tap = start, second tap = end. Then Next or Skip.\n\n1/5 Frames: පොටෝ 0–2. Skip හෝ Next.";
+    return "Frames: tap 1 or 2 photos (start, then end). If you tap a frame, refs are skipped — next is size.\n\nOr Skip to refs.\n\n1 Frames: තෝරොත් refs skip. Skip = refs.";
   }
   if (step === "people") {
-    return "Question 2/5 — Ref photos: tap 0–2 photos of the people. Then Next or Skip.\n\n2/5 Ref photos: පොටෝ 0–2. Skip හෝ Next.";
+    return "Ref photos: tap 0–2 people photos. Then Next or Skip.\n\n2 Ref photos: පොටෝ 0–2. Skip හෝ Next.";
   }
   if (step === "clip") {
-    return "Question 3/5 — Ref video: tap 0 or 1 video. Then Next or Skip.\n\n3/5 Ref video: වීඩියෝ 0–1. Skip හෝ Next.";
+    return "Question 3 — Ref video: tap 0 or 1 video. Then Next or Skip.\n\n3 Ref video: වීඩියෝ 0–1. Skip හෝ Next.";
   }
   if (step === "audio") {
-    return "Question 4/5 — Ref audio: tap 0 or 1 sound. Then Next or Skip.\n\n4/5 Ref audio: 0–1. Skip හෝ Next.";
+    return "Question 4 — Ref audio: tap 0 or 1 sound. Then Next or Skip.\n\n4 Ref audio: 0–1. Skip හෝ Next.";
   }
   if (step === "size") {
-    return "Question 5/5 — Size: tap 480p / 720p / 1080p and landscape or vertical. Skip = 480p landscape.\n\n5/5 Size. Skip = 480p landscape.";
+    return "Size: tap 480p / 720p / 1080p and landscape or vertical. Skip = 480p landscape.\n\nSize. Skip = 480p landscape.";
   }
   return "";
 }
@@ -1337,18 +1337,20 @@ export function finishAttachQuiz(memory: AgentMemory): AgentMemory {
   let frames = memory.wanFrames.filter(isStillImage).slice(0, 2);
   const named = peopleInText(`${brief}\n${memory.notes}`, getPeople());
   let people = memory.wanPeople.filter(isStillImage).slice(0, 2);
-  if (!people.length && named.length) {
-    people = personRefImages({ ...memory, personIds: [...new Set([...memory.personIds, ...named.map((person) => person.id)])] }, 6);
-  }
   let clip = memory.wanClip && mediaKindOf(memory.wanClip) === "video" ? memory.wanClip : null;
   let audio = memory.wanAudio && mediaKindOf(memory.wanAudio) === "audio" ? memory.wanAudio : null;
-  const dropped = Boolean(frames.length && (clip || audio));
   if (frames.length) {
+    people = [];
     clip = null;
     audio = null;
-  } else if (askedToContinueMovie(brief) && hasMovieClip(memory) && !clip && !audio) {
-    const end = clipEndImage(memory);
-    if (end) frames = [end];
+  } else {
+    if (!people.length && named.length) {
+      people = personRefImages({ ...memory, personIds: [...new Set([...memory.personIds, ...named.map((person) => person.id)])] }, 6);
+    }
+    if (askedToContinueMovie(brief) && hasMovieClip(memory) && !clip && !audio) {
+      const end = clipEndImage(memory);
+      if (end) frames = [end];
+    }
   }
   const size = videoSizeFromMemory(memory, brief);
   return {
@@ -1361,7 +1363,7 @@ export function finishAttachQuiz(memory: AgentMemory): AgentMemory {
     wanPeople: people,
     wanClip: clip,
     wanAudio: audio,
-    wanDroppedClipAudio: dropped,
+    wanDroppedClipAudio: false,
     wanSizeId: size.id,
     wanAspect: size.aspect,
     wanResolution: size.resolution,
@@ -1373,6 +1375,15 @@ export function finishAttachQuiz(memory: AgentMemory): AgentMemory {
 export function advanceAttachQuiz(memory: AgentMemory): { memory: AgentMemory; done: boolean; question: string; dropped: boolean } {
   const saved = applyQuizPicks(memory);
   if (saved.attachQuiz === "frames") {
+    if (saved.wanFrames.filter(isStillImage).length) {
+      const next: AgentMemory = { ...saved, attachQuiz: "size", chosenRefs: [], wanPeople: [], wanClip: null, wanAudio: null };
+      return {
+        memory: next,
+        done: false,
+        question: `Using your frames. Refs skipped.\n\n${attachQuizQuestion("size")}`,
+        dropped: false,
+      };
+    }
     const next: AgentMemory = { ...saved, attachQuiz: "people", chosenRefs: [] };
     return { memory: next, done: false, question: attachQuizQuestion("people"), dropped: false };
   }
@@ -1389,11 +1400,12 @@ export function advanceAttachQuiz(memory: AgentMemory): { memory: AgentMemory; d
     return { memory: next, done: false, question: attachQuizQuestion("size"), dropped: false };
   }
   const finished = finishAttachQuiz(saved);
-  return { memory: finished, done: true, question: "", dropped: finished.wanDroppedClipAudio };
+  return { memory: finished, done: true, question: "", dropped: false };
 }
 
 export function quizButtonLabel(memory: AgentMemory) {
   if (memory.attachQuiz === "size") return memory.wanSizeId ? "Next" : "Skip / None";
+  if (memory.attachQuiz === "frames") return memory.chosenRefs.length ? "Next" : "Skip to refs";
   return memory.chosenRefs.length ? "Next" : "Skip / None";
 }
 
@@ -1471,7 +1483,9 @@ async function plannerAttachQuiz(memory: AgentMemory, library: LibraryPhoto[]): 
   const used = new Set([...frames, ...people].map((img) => img.id));
   parts.push({
     type: "text",
-    text: "Each picture below is preceded by its label. Look at the photo. Trust the label for Wan slots. Do not move a people photo into frames.",
+    text: frames.length
+      ? "Wan frames path: only Frame 1/2 below go to Wan. No reference photos, videos, or audio in this call."
+      : "Wan refs path: no frames. Only Image 1/2, Video 1, and Audio 1 go to Wan. Do not invent frames.",
   });
   if (!frames.length) {
     parts.push({ type: "text", text: "No frame images. Do not invent first or last frames from other photos." });
@@ -1676,9 +1690,9 @@ function quizShotFields(memory: AgentMemory, kind: AgentShotKind, movieFollow: b
   const follow = movieFollow && !frames.length && !memory.wanClip && !memory.wanAudio;
   return {
     wanFrameIds: frames.map((img) => img.id),
-    wanPeopleIds: memory.wanPeople.filter(isStillImage).map((img) => img.id),
-    wanClipId: memory.wanClip?.id || "",
-    wanAudioId: memory.wanAudio?.id || "",
+    wanPeopleIds: frames.length ? [] : memory.wanPeople.filter(isStillImage).map((img) => img.id),
+    wanClipId: frames.length ? "" : memory.wanClip?.id || "",
+    wanAudioId: frames.length ? "" : memory.wanAudio?.id || "",
     useLastFrame: follow,
     aspect: size.aspect,
     resolution: size.resolution,
@@ -1745,15 +1759,17 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     quiz
       ? [
           memory.wanFrames.length
-            ? `Attach quiz: ${memory.wanFrames.length} frame image(s). Frame 1 is first${memory.wanFrames.length > 1 ? ", Frame 2 is last" : ""}.`
+            ? `Attach quiz: ${memory.wanFrames.length} frame image(s) only. Frame 1 is first${memory.wanFrames.length > 1 ? ", Frame 2 is last" : ""}. No reference photos, videos, or audio in this Wan call.`
             : "Attach quiz: no frame images.",
-          memory.wanPeople.length
-            ? `${memory.wanPeople.length} people / reference image(s) as Image 1, Image 2, …`
-            : "No people / reference images.",
-          memory.wanClip ? "Video 1 is attached (unseen)." : "No reference video.",
-          memory.wanAudio ? "Audio 1 is attached (unheard)." : "No reference audio.",
+          memory.wanFrames.length
+            ? "No people / reference images (frames path)."
+            : memory.wanPeople.length
+              ? `${memory.wanPeople.length} people / reference image(s) as Image 1, Image 2, …`
+              : "No people / reference images.",
+          memory.wanFrames.length ? "No reference video (frames path)." : memory.wanClip ? "Video 1 is attached (unseen)." : "No reference video.",
+          memory.wanFrames.length ? "No reference audio (frames path)." : memory.wanAudio ? "Audio 1 is attached (unheard)." : "No reference audio.",
           `Output size is ${videoSizeFromMemory(memory, brief).label} (${videoSizeFromMemory(memory, brief).aspect} ${videoSizeFromMemory(memory, brief).resolution}).`,
-          "Do not move photos between frames and people. Do not add other stills to Wan.",
+          "Wan can take frames OR refs, never both. Do not add other stills.",
         ].join(" ")
       : picked
         ? `The user picked ${memory.chosenRefs.length} photo(s) in tap order for this still. First tapped is the first image.`
@@ -2168,35 +2184,6 @@ function identityOnScenePrompt(memory: AgentMemory, action: string) {
   ].join(" ");
 }
 
-async function paintPeopleOnFrame(
-  people: LocalImage[],
-  frame: LocalImage,
-  action: string,
-  aspect: Aspect,
-  onProgress?: (n: number) => void
-): Promise<LocalImage> {
-  const still = await generateImage(
-    defaultImageModel(),
-    {
-      ...emptyTabState("image"),
-      images: [...people.filter(isStillImage).slice(0, 2), frame].slice(0, 3),
-      prompt: [
-        `The last image is the current scene. Keep that exact place, clothes, lighting, and camera world.`,
-        `The earlier images are the people — same face, same body, same hair, same skin.`,
-        `One still of those people in the last image's place, matching: ${action}.`,
-        `Same faces as those photos and as anyone already in the last image. Do not invent a new person.`,
-        `Ignore any bedroom, bed, wall, or indoor light in the earlier images. Those rooms must not appear.`,
-      ].join(" "),
-      aspect,
-      quality: "high",
-      enhancePrompt: false,
-      safety: false,
-    },
-    onProgress
-  );
-  return (await resultToStill(still)) || frame;
-}
-
 async function firstFrameForVideo(
   memory: AgentMemory,
   shot: AgentShot,
@@ -2252,9 +2239,7 @@ export async function runAgentShot(
       wanFrames = wanFrame ? [wanFrame] : [];
       refImages = wanFrames;
     } else if (quizFrames.length) {
-      wanFrames = quizPeople.length
-        ? await Promise.all(quizFrames.slice(0, 2).map((frame) => paintPeopleOnFrame(quizPeople, frame, prompt, size.aspect, onProgress)))
-        : quizFrames.slice(0, 2);
+      wanFrames = quizFrames.slice(0, 2);
       refImages = wanFrames;
     } else {
       refImages = quizPeople.length ? quizPeople : images.filter(isStillImage);
