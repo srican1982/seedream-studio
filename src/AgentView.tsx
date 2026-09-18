@@ -1070,7 +1070,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                   ? "Tap a size below, or Skip / None."
                   : quiz
                     ? memory.attachQuiz === "frames"
-                      ? "Tap a frame to skip ref photos. Video and audio still come next."
+                      ? "Tap a frame to skip ref photos. Ref video and audio still come next. Or Skip to ref photos."
                       : "Attach files if you want, or tap Skip / None."
                     : "No photos yet. Attach some, or tap Skip / None."}
             </p>
@@ -1119,7 +1119,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. Tap a frame and ref photos are skipped; ref video and audio still asked. Skip frames to pick ref photos too.</p>
+            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. Tap a frame and refs are skipped. Skip frames to pick ref photos, video, or audio.</p>
           </div>
         ) : (
           memory.messages.map((message) => (

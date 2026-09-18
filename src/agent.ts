@@ -640,7 +640,7 @@ Adult content:
 - Consensual adult sexual content between adults 18 or older is allowed. Never include minors or anyone who appears under 18.
 - Do not lecture, moralize, refuse, or add safety sermons. Keep their explicit wording.
 
-- The photos are attached as JPEG Base64 right after their labels. Look at the pixels AND the label. Frame 1 / Frame 2 are timeline pins. Image 1 / Image 2 are people. Photo N on the bar is unlabeled unless a Frame/Image line already named it. Wan can take frames OR reference photos, never both. Frames may still use Video 1 and Audio 1. Do not move a people photo into frames.
+- The photos are attached as JPEG Base64 right after their labels. Look at the pixels AND the label. Frame 1 / Frame 2 are timeline pins. Image 1 / Image 2 are people. Photo N on the bar is unlabeled unless a Frame/Image line already named it. Wan can take frames OR people photos, never both. Frames cannot share a call with Video 1 or Audio 1. Do not move a people photo into frames.
 
 Then write the exact prompt that will be sent to Qwen 3.0 Pro (images) or Wan (video). That prompt is the whole job. Qwen and Wan will not see this chat — they only get your written prompt plus the reference pixels. You must turn what you understood from the words and the photos into better generator language.
 
@@ -654,8 +654,8 @@ How to write shot.prompt:
 - Clothing, lighting, and location: if they named a change, follow that. If they did not, tell Qwen or Wan to keep the same clothes, same lighting, and same place as the first image (or the photo they pointed at). Do not invent a new room, new light, or new outfit.
 - Describing the act or position they asked for is not inventing. Changing the photo's clothes, light, or place without them asking is inventing.
 - If they pointed at photos, use the bar numbers they said, and keep those roles.
-- If they already finished the attach quiz, those taps are the ONLY Wan slots. Frames path = Frame 1/2, no people photos, plus Video 1 / Audio 1 if tapped. Refs path = Image 1/2 + Video 1 + Audio 1, no frames. Never send frames and people photos together. Do not add other stills.
-- Frame 1 is the first frame of the video. Frame 2 is the last frame. Image 1 / Image 2 are people references, not timeline pins. If frames exist, do not write Image 1. Keep Video 1 / Audio 1 if attached.
+- If they already finished the attach quiz, those taps are the ONLY Wan slots. Frames path = Frame 1/2 only on Wan 3.0. No people photos, no Video 1, no Audio 1. Refs path = Image 1/2 + Video 1 + Audio 1, no frames. Never send frames with people photos, video, or audio. Do not add other stills.
+- Frame 1 is the first frame of the video. Frame 2 is the last frame. Image 1 / Image 2 are people references, not timeline pins. If frames exist, do not write Image 1, Video 1, or Audio 1.
 - If Video 1 is attached, you cannot watch it. Still write motion to follow Video 1. If Audio 1 is attached, you cannot hear it. Still write that the soundtrack follows Audio 1. If none, do not invent a file.
 - If they already picked photos in tap order for a still (not the Wan quiz), those are the ONLY references. refs must be attached. First tapped is the first image, second tapped is the second image. Do not add other stills.
 - If they name some photos for the people and other photos for poses, follow what they said. Do not assume photo 1 is people or photo 2 is pose unless they said that.
@@ -682,7 +682,7 @@ How to write shot.prompt:
 - Training photos often come from another room. Never copy those rooms into the movie. If clip-end exists, that place is the whole clip. Do not open or end in a bedroom.
 - Qwen 3.0 Pro can only take 3 reference images. Wan can take 10. If there are more, keep the ones the user cares about most, usually new uploads first.
 - For video, describe the motion they asked in the same explicit way. Include scene sound. Add spoken words only if they asked someone to say them.
-- Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. Video size is the quiz pick (480p/720p/1080p, landscape 16:9 or vertical 9:16). Duration is what they said, else 10s. Wan max 30s per clip.
+- Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0, or they tapped frames — then Wan 3.0 (dashboard I2V). Video size is the quiz pick (480p/720p/1080p, landscape 16:9 or vertical 9:16). Duration is what they said, else 10s. Wan max 30s per clip.
 
 If they are only chatting, return shots: [] and put your answer in reply.
 reply must be one short sentence or "". Never put JSON, markdown, or the generator prompt in reply. The Qwen/Wan instruction belongs only in shots[].prompt.
@@ -1490,7 +1490,7 @@ async function plannerAttachQuiz(memory: AgentMemory, library: LibraryPhoto[]): 
   parts.push({
     type: "text",
     text: frames.length
-      ? "Wan frames path: Frame 1/2 go as frames. No people / reference photos. Video 1 and Audio 1 still go if attached. Do not write Image 1."
+      ? "Wan frames path: Frame 1/2 go as frames on Wan 3.0. No people photos, no Video 1, no Audio 1 in this call. Do not write Image 1, Video 1, or Audio 1."
       : "Wan refs path: no frames. Only Image 1/2, Video 1, and Audio 1 go to Wan. Do not invent frames.",
   });
   if (!frames.length) {
@@ -1697,8 +1697,8 @@ function quizShotFields(memory: AgentMemory, kind: AgentShotKind, movieFollow: b
   return {
     wanFrameIds: frames.map((img) => img.id),
     wanPeopleIds: frames.length ? [] : memory.wanPeople.filter(isStillImage).map((img) => img.id),
-    wanClipId: memory.wanClip?.id || "",
-    wanAudioId: memory.wanAudio?.id || "",
+    wanClipId: frames.length ? "" : memory.wanClip?.id || "",
+    wanAudioId: frames.length ? "" : memory.wanAudio?.id || "",
     useLastFrame: follow,
     aspect: size.aspect,
     resolution: size.resolution,
@@ -1765,17 +1765,17 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     quiz
       ? [
           memory.wanFrames.length
-            ? `Attach quiz: ${memory.wanFrames.length} frame image(s). Frame 1 is first${memory.wanFrames.length > 1 ? ", Frame 2 is last" : ""}. No people / reference photos in this Wan call.`
+            ? `Attach quiz: ${memory.wanFrames.length} frame image(s). Frame 1 is first${memory.wanFrames.length > 1 ? ", Frame 2 is last" : ""}. No people photos. Wan 3.0 I2V — no Video 1 or Audio 1 in this call.`
             : "Attach quiz: no frame images.",
           memory.wanFrames.length
             ? "No people / reference images (frames path)."
             : memory.wanPeople.length
               ? `${memory.wanPeople.length} people / reference image(s) as Image 1, Image 2, …`
               : "No people / reference images.",
-          memory.wanClip ? "Video 1 is attached (unseen)." : "No reference video.",
-          memory.wanAudio ? "Audio 1 is attached (unheard)." : "No reference audio.",
+          memory.wanFrames.length ? "No reference video (frames path)." : memory.wanClip ? "Video 1 is attached (unseen)." : "No reference video.",
+          memory.wanFrames.length ? "No reference audio (frames path)." : memory.wanAudio ? "Audio 1 is attached (unheard)." : "No reference audio.",
           `Output size is ${videoSizeFromMemory(memory, brief).label} (${videoSizeFromMemory(memory, brief).aspect} ${videoSizeFromMemory(memory, brief).resolution}).`,
-          "Wan can take frames OR people photos, never both. Video and audio can go with either path. Do not add other stills.",
+          "Wan can take frames OR people photos / video / audio, never frames mixed with those. Do not add other stills.",
         ].join(" ")
       : picked
         ? `The user picked ${memory.chosenRefs.length} photo(s) in tap order for this still. First tapped is the first image.`
@@ -1841,9 +1841,11 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     const tagged = modelFromText(brief, kind);
     const model = kind === "image"
       ? defaultImageModel()
-      : tagged && isVideoTab(tagged)
-        ? tagged
-        : isVideoTab(asked) ? asked : defaultVideoModel();
+      : memory.wanFrames.filter(isStillImage).length
+        ? "wan-3"
+        : tagged && isVideoTab(tagged)
+          ? tagged
+          : isVideoTab(asked) ? asked : defaultVideoModel();
     const wanted = kind === "video" ? askedSeconds(brief) || 10 : 0;
     const rowRefs = String(row.refs || "").toLowerCase();
     const shotRefs = memory.hasPickedVideoRefs
@@ -1911,7 +1913,11 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
 
   if (!shots.length && askedToGenerate(brief)) {
     const kind: AgentShotKind = askedForVideo(brief) ? "video" : "image";
-    const model = kind === "image" ? defaultImageModel() : defaultVideoModel();
+    const model = kind === "image"
+      ? defaultImageModel()
+      : memory.wanFrames.filter(isStillImage).length
+        ? "wan-3"
+        : defaultVideoModel();
     const wanted = kind === "video" ? askedSeconds(brief) || 10 : 0;
     const duration = kind === "video" ? clipVideoDuration(model as VideoTabId, wanted) : 0;
     const poseJob = kind === "image" && Boolean(split?.poses.length);
@@ -2247,10 +2253,6 @@ export async function runAgentShot(
     } else if (quizFrames.length) {
       wanFrames = quizFrames.slice(0, 2);
       refImages = wanFrames;
-      const clip = clipSource(quizClip);
-      const audio = clipSource(quizAudio);
-      if (clip) wanVideos = [clip];
-      if (audio) wanAudios = [audio];
     } else {
       refImages = quizPeople.length ? quizPeople : images.filter(isStillImage);
       const clip = clipSource(quizClip);
@@ -2275,10 +2277,12 @@ export async function runAgentShot(
       resolution: shot.kind === "video" ? size.resolution : "480p",
   };
 
+  const videoModel =
+    shot.kind === "video" && wanFrames.length ? "wan-3" : (shot.model as VideoTabId);
   const result =
     shot.kind === "image"
       ? await generateImage(shot.model as ImageTabId, state, onProgress)
-      : await generateVideo(shot.model as VideoTabId, state, onProgress);
+      : await generateVideo(videoModel, state, onProgress);
 
   const still = result.kind === "image" ? await resultToStill(result) : null;
   const clipFrames = result.kind === "video" ? await captureVideoFrames(result.url) : { start: null, end: null };

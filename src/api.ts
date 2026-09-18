@@ -154,7 +154,7 @@ async function postDirect(tasks: unknown[], key: string): Promise<RunwareEnvelop
       connectTimeout: 600000,
       readTimeout: 600000,
     });
-    const data = res.data as RunwareEnvelope;
+    const data = parseRunwareBody(res.data);
     if (res.status >= 400) {
       throw new Error(errorMessage(data, `Runware HTTP ${res.status}`));
     }
@@ -172,6 +172,18 @@ async function postDirect(tasks: unknown[], key: string): Promise<RunwareEnvelop
   const payload = (await res.json()) as RunwareEnvelope;
   if (!res.ok) throw new Error(errorMessage(payload, `Runware HTTP ${res.status}`));
   return payload;
+}
+
+function parseRunwareBody(data: unknown): RunwareEnvelope {
+  if (typeof data === "string") {
+    try {
+      return JSON.parse(data) as RunwareEnvelope;
+    } catch {
+      return { errors: [{ message: data }] };
+    }
+  }
+  if (data && typeof data === "object") return data as RunwareEnvelope;
+  return { errors: [{ message: "Empty Runware response." }] };
 }
 
 async function loadDeviceConfig() {
@@ -253,37 +265,6 @@ function isFinishedRow(row: Record<string, unknown>) {
   );
 }
 
-async function uploadRunwareImage(image: string): Promise<string> {
-  const value = image.trim();
-  if (!value) throw new Error("Missing photo.");
-  if (isUsableMediaUrl(value) && /^https?:\/\//i.test(value)) return value;
-  const uploaded = await postRunware([
-    {
-      taskType: "imageUpload",
-      taskUUID: uuid(),
-      image: value,
-    },
-  ]);
-  if (!uploaded.errors?.length) {
-    const row = uploaded.data?.[0] || {};
-    const url = String(row.imageURL || row.imageUUID || "");
-    if (url) return url;
-  }
-  const stored = await postRunware([
-    {
-      taskType: "mediaStorage",
-      taskUUID: uuid(),
-      operation: "upload",
-      media: value,
-    },
-  ]);
-  if (stored.errors?.length) throw new Error(errorMessage(stored, "Could not upload the photo."));
-  const row = stored.data?.[0] || {};
-  const url = String(row.mediaURL || "");
-  if (!url) throw new Error("Could not upload the photo.");
-  return url;
-}
-
 async function uploadRunwareMedia(media: string): Promise<string> {
   const value = media.trim();
   if (!value) throw new Error("Missing file.");
@@ -299,9 +280,40 @@ async function uploadRunwareMedia(media: string): Promise<string> {
   ]);
   if (payload.errors?.length) throw new Error(errorMessage(payload, "Could not upload the file."));
   const row = payload.data?.[0] || {};
-  const uploaded = String(row.mediaUUID || row.mediaURL || "");
-  if (!uploaded) throw new Error("Could not upload the file.");
-  return String(row.mediaUUID || row.mediaURL);
+  const url = String(row.mediaURL || "");
+  const id = String(row.mediaUUID || "");
+  if (/^https?:\/\//i.test(url)) return url;
+  if (id) return id;
+  if (url) return url;
+  throw new Error("Could not upload the file.");
+}
+
+async function uploadRunwareImage(image: string): Promise<string> {
+  const value = image.trim();
+  if (!value) throw new Error("Missing image.");
+  if (isUsableMediaUrl(value) && /^https?:\/\//i.test(value)) return value;
+  try {
+    return await uploadRunwareMedia(value);
+  } catch {
+    /* imageUpload next */
+  }
+  try {
+    const payload = await postRunware([
+      {
+        taskType: "imageUpload",
+        taskUUID: uuid(),
+        image: value,
+      },
+    ]);
+    if (!payload.errors?.length) {
+      const row = payload.data?.[0] || {};
+      const uploaded = String(row.imageURL || row.imageUUID || "");
+      if (uploaded) return uploaded;
+    }
+  } catch {
+    /* keep the data URI — native upload can fail while inference still accepts it */
+  }
+  return value;
 }
 
 function uuidFromMediaUrl(url: string) {
@@ -739,25 +751,21 @@ export async function generateVideo(
       .filter(isUsableReferenceImage);
     const refs = images.length ? images : state.images.map((img) => stillSrc(img)).filter(isUsableReferenceImage);
     const fittedFrames = frames.length ? await Promise.all(frames.slice(0, 2).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
-    const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
-    const audios = await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
+    const videos = fittedFrames.length
+      ? []
+      : await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
+    const audios = fittedFrames.length
+      ? []
+      : await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
     if (fittedFrames.length) {
-      const frameIds = await Promise.all(fittedFrames.map((image) => uploadRunwareImage(image)));
-      const inputs: Record<string, unknown> = {
-        frameImages: frameIds.map((image, index) => ({
-          image,
-          frame: fittedFrames.length === 1 || index === 0 ? "first" : "last",
-        })),
-      };
-      if (videos.length) inputs.referenceVideos = videos;
-      if (audios.length) inputs.referenceAudios = audios;
-      task.inputs = inputs;
+      task.model = findVideo("wan-3").airId;
+      task.inputs = { frameImages: await Promise.all(fittedFrames.map(uploadRunwareImage)) };
       task.resolution = resolution;
-      task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), {
-        frames: true,
-        video: Boolean(videos.length),
-        audio: Boolean(audios.length),
-      });
+      task.positivePrompt = scrubWanPrompt(state.prompt.trim(), { frames: true });
+      task.numberResults = 1;
+      task.outputQuality = 95;
+      task.includeCost = false;
+      delete task.ttl;
     } else {
       const fittedRefs = refs.length ? await Promise.all(refs.slice(0, 10).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
       const inputs: Record<string, unknown> = {};
@@ -776,12 +784,12 @@ export async function generateVideo(
         task.width = size.width;
         task.height = size.height;
       }
+      task.safety = { checkContent: state.safety, mode: "fast" };
+      task.settings = {
+        promptExtend: false,
+        audio: state.audio,
+      };
     }
-    task.safety = { checkContent: state.safety, mode: "fast" };
-    task.settings = {
-      promptExtend: false,
-      audio: state.audio,
-    };
   } else {
     task.resolution = resolution;
     if (images.length) task.inputs = { frameImages: images };
@@ -793,8 +801,9 @@ export async function generateVideo(
     }
   }
 
+  const resultTab = String(task.model) === findVideo("wan-3").airId ? "wan-3" : tab;
   return withKeepAlive("Generating a video… You can switch apps.", async () =>
-    toStudioResult("video", tab, state, await runTask(task, onProgress))
+    toStudioResult("video", resultTab, state, await runTask(task, onProgress))
   );
 }
 
