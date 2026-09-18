@@ -154,8 +154,15 @@ public class KeepAlivePlugin extends Plugin {
             if (rows == null) continue;
             JSONObject failed = findRow(rows, "error");
             if (failed != null) {
+                String message = "";
                 JSONObject err = failed.optJSONObject("error");
-                String message = err != null ? err.optString("message", "") : "";
+                if (err != null) {
+                    message = err.optString("message", "");
+                    if (message.isEmpty()) message = err.toString();
+                } else {
+                    message = failed.optString("error", "");
+                    if (message.isEmpty()) message = failed.optString("message", "");
+                }
                 throw new IllegalStateException(message.isEmpty() ? "Generation failed." : message);
             }
             JSONObject done = findFinished(rows);

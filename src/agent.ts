@@ -1296,8 +1296,16 @@ export function quizAccepts(step: AttachQuizStep, item: LocalImage) {
 
 function clipSource(item: LocalImage | null | undefined) {
   if (!item) return "";
-  const src = item.dataUri || item.preview || "";
-  return isUsableMediaUrl(src) || /^data:(video|audio)\//i.test(src) ? src : "";
+  const kind = mediaKindOf(item);
+  const src = item.dataUri || "";
+  if (kind === "video") {
+    return /^data:video\//i.test(src) || (isUsableMediaUrl(src) && /^https?:\/\//i.test(src)) ? src : "";
+  }
+  if (kind === "audio") {
+    const audio = item.dataUri || item.preview || "";
+    return /^data:audio\//i.test(audio) || (isUsableMediaUrl(audio) && /^https?:\/\//i.test(audio)) ? audio : "";
+  }
+  return "";
 }
 
 export function beginAttachQuiz(memory: AgentMemory, attached: LocalImage[]): { memory: AgentMemory; question: string } {

@@ -329,7 +329,10 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     current = pushMessage(current, {
       id: uuid(),
       role: "assistant",
-      text: `${done?.status === "done" ? "Done" : "Failed"}: ${shot.title}\n\n${approvalText(current, done || shot)}`,
+      text:
+        done?.status === "done"
+          ? `Done: ${shot.title}\n\n${approvalText(current, done)}`
+          : `Failed: ${shot.title}${done?.error ? `\n\n${done.error}` : ""}\n\n${approvalText(current, done || shot)}`,
       result: done?.result,
       shotId: shot.id,
       createdAt: Date.now(),

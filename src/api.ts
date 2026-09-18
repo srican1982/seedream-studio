@@ -117,10 +117,17 @@ function rowErrorMessage(row: Record<string, unknown>) {
   const err = row.error;
   if (typeof err === "string" && err.trim()) return err.trim();
   if (err && typeof err === "object") {
-    const msg = (err as { message?: unknown }).message;
-    if (typeof msg === "string" && msg.trim()) return msg.trim();
+    const obj = err as Record<string, unknown>;
+    const parts = [obj.message, obj.error, obj.code].filter((value) => typeof value === "string" && value.trim()) as string[];
+    if (parts.length) return parts.join(" · ");
+    try {
+      return JSON.stringify(err);
+    } catch {
+      /* ignore */
+    }
   }
   if (typeof row.message === "string" && row.message.trim()) return row.message.trim();
+  if (typeof row.errorMessage === "string" && row.errorMessage.trim()) return row.errorMessage.trim();
   return "Generation failed.";
 }
 
@@ -244,6 +251,37 @@ function isFinishedRow(row: Record<string, unknown>) {
       row.imageBase64Data ||
       row.videoURL
   );
+}
+
+async function uploadRunwareImage(image: string): Promise<string> {
+  const value = image.trim();
+  if (!value) throw new Error("Missing photo.");
+  if (isUsableMediaUrl(value) && /^https?:\/\//i.test(value)) return value;
+  const uploaded = await postRunware([
+    {
+      taskType: "imageUpload",
+      taskUUID: uuid(),
+      image: value,
+    },
+  ]);
+  if (!uploaded.errors?.length) {
+    const row = uploaded.data?.[0] || {};
+    const url = String(row.imageURL || row.imageUUID || "");
+    if (url) return url;
+  }
+  const stored = await postRunware([
+    {
+      taskType: "mediaStorage",
+      taskUUID: uuid(),
+      operation: "upload",
+      media: value,
+    },
+  ]);
+  if (stored.errors?.length) throw new Error(errorMessage(stored, "Could not upload the photo."));
+  const row = stored.data?.[0] || {};
+  const url = String(row.mediaURL || "");
+  if (!url) throw new Error("Could not upload the photo.");
+  return url;
 }
 
 async function uploadRunwareMedia(media: string): Promise<string> {
@@ -704,7 +742,7 @@ export async function generateVideo(
     const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
     const audios = await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
     if (fittedFrames.length) {
-      const frameIds = await Promise.all(fittedFrames.map((image) => uploadRunwareMedia(image)));
+      const frameIds = await Promise.all(fittedFrames.map((image) => uploadRunwareImage(image)));
       const inputs: Record<string, unknown> = {
         frameImages: frameIds.map((image, index) => ({
           image,
