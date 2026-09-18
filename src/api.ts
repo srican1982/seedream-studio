@@ -684,12 +684,15 @@ export async function generateVideo(
     const fittedFrames = frames.length ? await Promise.all(frames.slice(0, 2).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
     const fittedRefs = !fittedFrames.length && refs.length ? await Promise.all(refs.slice(0, 10).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
     if (fittedFrames.length) {
-      task.inputs = {
+      const inputs: Record<string, unknown> = {
         frameImages: fittedFrames.map((image, index) => ({
           image,
           frame: fittedFrames.length === 1 || index === 0 ? "first" : "last",
         })),
       };
+      if (videos.length) inputs.referenceVideos = videos;
+      if (audios.length) inputs.referenceAudios = audios;
+      task.inputs = inputs;
       task.resolution = resolution;
     } else {
       const inputs: Record<string, unknown> = {};
