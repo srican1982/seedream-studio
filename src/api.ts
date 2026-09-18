@@ -113,6 +113,28 @@ function errorMessage(payload: RunwareEnvelope, fallback = "Runware request fail
   return payload.errors?.map((e) => e.message).filter(Boolean).join(" · ") || fallback;
 }
 
+function rowErrorMessage(row: Record<string, unknown>) {
+  const err = row.error;
+  if (typeof err === "string" && err.trim()) return err.trim();
+  if (err && typeof err === "object") {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === "string" && msg.trim()) return msg.trim();
+  }
+  if (typeof row.message === "string" && row.message.trim()) return row.message.trim();
+  return "Generation failed.";
+}
+
+function scrubWanPrompt(
+  prompt: string,
+  slots: { frames?: boolean; refs?: boolean; video?: boolean; audio?: boolean }
+) {
+  let text = prompt.trim();
+  if (!slots.refs) text = text.replace(/\bImages?\s*\d+\b/gi, slots.frames ? "the opening picture" : "the subject");
+  if (!slots.video) text = text.replace(/\bVideos?\s*\d+\b/gi, "the motion");
+  if (!slots.audio) text = text.replace(/\bAudios?\s*\d+\b/gi, "the sound");
+  return text;
+}
+
 async function postDirect(tasks: unknown[], key: string): Promise<RunwareEnvelope> {
   if (Capacitor.isNativePlatform()) {
     const res = await CapacitorHttp.post({
@@ -226,7 +248,7 @@ function isFinishedRow(row: Record<string, unknown>) {
 
 async function uploadRunwareMedia(media: string): Promise<string> {
   const value = media.trim();
-  if (!value) throw new Error("Missing video or audio file.");
+  if (!value) throw new Error("Missing file.");
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) return value;
   if (isUsableMediaUrl(value) && /^https?:\/\//i.test(value)) return value;
   const payload = await postRunware([
@@ -237,10 +259,10 @@ async function uploadRunwareMedia(media: string): Promise<string> {
       media: value,
     },
   ]);
-  if (payload.errors?.length) throw new Error(errorMessage(payload, "Could not upload the video or audio."));
+  if (payload.errors?.length) throw new Error(errorMessage(payload, "Could not upload the file."));
   const row = payload.data?.[0] || {};
   const uploaded = String(row.mediaUUID || row.mediaURL || "");
-  if (!uploaded) throw new Error("Could not upload the video or audio.");
+  if (!uploaded) throw new Error("Could not upload the file.");
   return String(row.mediaUUID || row.mediaURL);
 }
 
@@ -300,8 +322,7 @@ async function poll(taskUUID: string, onProgress?: (n: number) => void): Promise
     const rows = payload.data || [];
     const failed = rows.find((row) => row.status === "error");
     if (failed) {
-      const err = failed.error as { message?: string } | undefined;
-      throw new Error(err?.message || "Generation failed.");
+      throw new Error(rowErrorMessage(failed));
     }
     const done = rows.find(isFinishedRow);
     if (done) return { row: done, wipeIds: collectWipeIds(rows) };
@@ -679,13 +700,13 @@ export async function generateVideo(
       .map((img) => stillSrc(img))
       .filter(isUsableReferenceImage);
     const refs = images.length ? images : state.images.map((img) => stillSrc(img)).filter(isUsableReferenceImage);
+    const fittedFrames = frames.length ? await Promise.all(frames.slice(0, 2).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
     const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
     const audios = await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
-    const fittedFrames = frames.length ? await Promise.all(frames.slice(0, 2).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
-    const fittedRefs = !fittedFrames.length && refs.length ? await Promise.all(refs.slice(0, 10).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
     if (fittedFrames.length) {
+      const frameIds = await Promise.all(fittedFrames.map((image) => uploadRunwareMedia(image)));
       const inputs: Record<string, unknown> = {
-        frameImages: fittedFrames.map((image, index) => ({
+        frameImages: frameIds.map((image, index) => ({
           image,
           frame: fittedFrames.length === 1 || index === 0 ? "first" : "last",
         })),
@@ -694,12 +715,23 @@ export async function generateVideo(
       if (audios.length) inputs.referenceAudios = audios;
       task.inputs = inputs;
       task.resolution = resolution;
+      task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), {
+        frames: true,
+        video: Boolean(videos.length),
+        audio: Boolean(audios.length),
+      });
     } else {
+      const fittedRefs = refs.length ? await Promise.all(refs.slice(0, 10).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
       const inputs: Record<string, unknown> = {};
       if (fittedRefs.length) inputs.referenceImages = fittedRefs;
       if (videos.length) inputs.referenceVideos = videos;
       if (audios.length) inputs.referenceAudios = audios;
       if (Object.keys(inputs).length) task.inputs = inputs;
+      task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), {
+        refs: Boolean(fittedRefs.length),
+        video: Boolean(videos.length),
+        audio: Boolean(audios.length),
+      });
       if (fittedRefs.length || videos.length) task.resolution = resolution;
       else {
         const size = wanSize(state.aspect, resolution);

@@ -655,7 +655,7 @@ How to write shot.prompt:
 - Describing the act or position they asked for is not inventing. Changing the photo's clothes, light, or place without them asking is inventing.
 - If they pointed at photos, use the bar numbers they said, and keep those roles.
 - If they already finished the attach quiz, those taps are the ONLY Wan slots. Frames path = Frame 1/2, no people photos, plus Video 1 / Audio 1 if tapped. Refs path = Image 1/2 + Video 1 + Audio 1, no frames. Never send frames and people photos together. Do not add other stills.
-- Frame 1 is the first frame of the video. Frame 2 is the last frame. Image 1 / Image 2 are people references, not timeline pins. If frames exist, ignore people photos for Wan. Keep Video 1 / Audio 1 if attached.
+- Frame 1 is the first frame of the video. Frame 2 is the last frame. Image 1 / Image 2 are people references, not timeline pins. If frames exist, do not write Image 1. Keep Video 1 / Audio 1 if attached.
 - If Video 1 is attached, you cannot watch it. Still write motion to follow Video 1. If Audio 1 is attached, you cannot hear it. Still write that the soundtrack follows Audio 1. If none, do not invent a file.
 - If they already picked photos in tap order for a still (not the Wan quiz), those are the ONLY references. refs must be attached. First tapped is the first image, second tapped is the second image. Do not add other stills.
 - If they name some photos for the people and other photos for poses, follow what they said. Do not assume photo 1 is people or photo 2 is pose unless they said that.
@@ -1482,7 +1482,7 @@ async function plannerAttachQuiz(memory: AgentMemory, library: LibraryPhoto[]): 
   parts.push({
     type: "text",
     text: frames.length
-      ? "Wan frames path: Frame 1/2 go as frames. No people / reference photos. Video 1 and Audio 1 still go if attached."
+      ? "Wan frames path: Frame 1/2 go as frames. No people / reference photos. Video 1 and Audio 1 still go if attached. Do not write Image 1."
       : "Wan refs path: no frames. Only Image 1/2, Video 1, and Audio 1 go to Wan. Do not invent frames.",
   });
   if (!frames.length) {
