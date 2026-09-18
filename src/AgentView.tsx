@@ -383,7 +383,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       return;
     }
     const note = step.dropped
-      ? "Start/end frames cannot use a clip or song in the same call. I’ll pin the frames and skip those files."
+      ? "Wan cannot take start/end frames and a ref video/audio together. I kept your frames and skipped the clip/song."
       : "";
     commit(
       note
@@ -936,16 +936,16 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
   const photoLimit = recreating ? recreateRefLimit(recreateKind) : quiz ? quizStepLimit(memory.attachQuiz) : VIDEO_REF_LIMIT;
   const quizTitle =
     memory.attachQuiz === "frames"
-      ? "Start / end frames"
+      ? "Frames"
       : memory.attachQuiz === "people"
-        ? "People photos"
+        ? "Ref photos"
         : memory.attachQuiz === "clip"
-          ? "Motion clip"
+          ? "Ref video"
           : memory.attachQuiz === "audio"
-          ? "Sound"
-          : memory.attachQuiz === "size"
-            ? "Video size"
-            : "";
+            ? "Ref audio"
+            : memory.attachQuiz === "size"
+              ? "Video size"
+              : "";
 
   return (
     <div className="chat">
@@ -1126,7 +1126,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. Type Wan 3.0 if you want the slower model. After a video I’ll ask frames, people, a clip, sound, then size — Skip / None is fine on each.</p>
+            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. After a video, tap what to send: frames 0–2, ref photos 0–2, ref video 0–1, ref audio 0–1, then size.</p>
           </div>
         ) : (
           memory.messages.map((message) => (

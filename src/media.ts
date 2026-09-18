@@ -1,3 +1,5 @@
+import type { Aspect } from "./types";
+
 export function uuid(): string {
   const c = globalThis.crypto;
   if (c && typeof c.randomUUID === "function") return c.randomUUID();
@@ -140,6 +142,50 @@ export async function blobToJpegDataUri(blob: Blob, maxEdge = 1400, quality = 0.
   const file = new File([blob], "still.jpg", { type: mime });
   const uri = await fileToDataUri(file, maxEdge, quality);
   return isUsableReferenceImage(uri) ? uri : null;
+}
+
+export function aspectRatio(aspect: Aspect) {
+  const [wide, high] = aspect.split(":").map(Number);
+  return wide > 0 && high > 0 ? wide / high : 16 / 9;
+}
+
+export async function fitImageDataUriToAspect(source: string, aspect: Aspect, maxEdge = 1280): Promise<string> {
+  if (!source || !/^data:image\//i.test(source)) return source;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const target = aspectRatio(aspect);
+        const srcRatio = img.width / Math.max(1, img.height);
+        let sx = 0;
+        let sy = 0;
+        let sw = img.width;
+        let sh = img.height;
+        if (srcRatio > target) {
+          sw = Math.max(1, Math.round(img.height * target));
+          sx = Math.round((img.width - sw) / 2);
+        } else if (srcRatio < target) {
+          sh = Math.max(1, Math.round(img.width / target));
+          sy = Math.round((img.height - sh) / 2);
+        }
+        const scale = Math.min(1, maxEdge / Math.max(sw, sh));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(sw * scale));
+        canvas.height = Math.max(1, Math.round(sh * scale));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve(source);
+          return;
+        }
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", 0.9));
+      } catch {
+        resolve(source);
+      }
+    };
+    img.onerror = () => resolve(source);
+    img.src = source;
+  });
 }
 
 export async function fileToDataUri(file: File, maxEdge = 1600, quality = 0.88): Promise<string> {

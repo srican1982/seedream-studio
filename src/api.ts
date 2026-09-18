@@ -11,7 +11,7 @@ import {
   wanPositivePrompt,
   wanSize,
 } from "./models";
-import { fileToDataUri, isImageFile, isUsableMediaUrl, isUsableReferenceImage, uuid } from "./media";
+import { fileToDataUri, fitImageDataUriToAspect, isImageFile, isUsableMediaUrl, isUsableReferenceImage, uuid } from "./media";
 import { nativePollRunware, nativeSleep, withKeepAlive } from "./keep-alive";
 import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
@@ -674,24 +674,30 @@ export async function generateVideo(
   };
 
   if (VIDEO_WAN_MODELS.includes(tab)) {
-    const frames = (state.wanFrames || []).map((img) => img.dataUri).filter(isUsableReferenceImage);
+    const stillSrc = (img: { dataUri?: string; preview?: string }) => img.dataUri || img.preview || "";
+    const frames = (state.wanFrames || [])
+      .map((img) => stillSrc(img))
+      .filter(isUsableReferenceImage);
+    const refs = images.length ? images : state.images.map((img) => stillSrc(img)).filter(isUsableReferenceImage);
     const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
     const audios = await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
-    if (frames.length) {
+    const fittedFrames = frames.length ? await Promise.all(frames.slice(0, 2).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
+    const fittedRefs = !fittedFrames.length && refs.length ? await Promise.all(refs.slice(0, 10).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
+    if (fittedFrames.length) {
       task.inputs = {
-        frameImages: frames.slice(0, 2).map((image, index) => ({
+        frameImages: fittedFrames.map((image, index) => ({
           image,
-          frame: frames.length === 1 || index === 0 ? "first" : "last",
+          frame: fittedFrames.length === 1 || index === 0 ? "first" : "last",
         })),
       };
       task.resolution = resolution;
     } else {
       const inputs: Record<string, unknown> = {};
-      if (images.length) inputs.referenceImages = images;
+      if (fittedRefs.length) inputs.referenceImages = fittedRefs;
       if (videos.length) inputs.referenceVideos = videos;
       if (audios.length) inputs.referenceAudios = audios;
       if (Object.keys(inputs).length) task.inputs = inputs;
-      if (images.length || videos.length || audios.length) task.resolution = resolution;
+      if (fittedRefs.length || videos.length) task.resolution = resolution;
       else {
         const size = wanSize(state.aspect, resolution);
         task.width = size.width;

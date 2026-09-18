@@ -1263,29 +1263,27 @@ export function isQuizAdvance(text: string) {
 
 export function attachQuizQuestion(step: AttachQuizStep) {
   if (step === "frames") {
-    return "Question 1/5 — Start and end frames: tap 0–2 PHOTOS only. Videos stay for a later question. First tap is the first frame, second tap is the last. Then Skip / None or Next.\n\n1/5 ආරම්භය/අවසානය: පොටෝ 0–2ක් විතරක්. වීඩියෝ ඊළඟ ප්‍රශ්නෙට. Skip / None හෝ Next.";
+    return "Question 1/5 — Frames: tap 0, 1, or 2 photos. First tap = start, second tap = end. Then Next or Skip.\n\n1/5 Frames: පොටෝ 0–2. Skip හෝ Next.";
   }
   if (step === "people") {
-    return "Question 2/5 — People photos: tap who should appear (up to 10 photos). Not start/end frames. Then Skip / None or Next.\n\n2/5 අයගේ පොටෝ. Frames නෙවෙයි. Skip / None හෝ Next.";
+    return "Question 2/5 — Ref photos: tap 0–2 photos of the people. Then Next or Skip.\n\n2/5 Ref photos: පොටෝ 0–2. Skip හෝ Next.";
   }
   if (step === "clip") {
-    return "Question 3/5 — Motion clip: tap ONE video on the bar, or Skip / None. I will still ask for sound and size.\n\n3/5 වීඩියෝවක් එකක් tap කරන්න. නැත්නම් Skip / None.";
+    return "Question 3/5 — Ref video: tap 0 or 1 video. Then Next or Skip.\n\n3/5 Ref video: වීඩියෝ 0–1. Skip හෝ Next.";
   }
   if (step === "audio") {
-    return "Question 4/5 — Sound: tap one audio file on the bar, or Skip / None. Size is next.\n\n4/5 සින්දුවක් හෝ හඬක් තියෙනවා නම් tap කරන්න. නැත්නම් Skip / None.";
+    return "Question 4/5 — Ref audio: tap 0 or 1 sound. Then Next or Skip.\n\n4/5 Ref audio: 0–1. Skip හෝ Next.";
   }
   if (step === "size") {
-    return "Question 5/5 — Video size: tap landscape or vertical, and 480p / 720p / 1080p. Skip / None keeps 480p landscape unless you said Instagram or vertical.\n\n5/5 වීඩියෝ එකේ size: landscape හෝ vertical, 480p/720p/1080p. Skip / None = 480p landscape.";
+    return "Question 5/5 — Size: tap 480p / 720p / 1080p and landscape or vertical. Skip = 480p landscape.\n\n5/5 Size. Skip = 480p landscape.";
   }
   return "";
 }
 
 export function quizStepLimit(step: AttachQuizStep) {
-  if (step === "frames") return 2;
-  if (step === "people") return VIDEO_REF_LIMIT;
-  if (step === "clip" || step === "audio") return 1;
-  if (step === "size") return 1;
-  return VIDEO_REF_LIMIT;
+  if (step === "frames" || step === "people") return 2;
+  if (step === "clip" || step === "audio" || step === "size") return 1;
+  return 2;
 }
 
 export function quizAccepts(step: AttachQuizStep, item: LocalImage) {
@@ -1328,7 +1326,7 @@ export function beginAttachQuiz(memory: AgentMemory, attached: LocalImage[]): { 
 function applyQuizPicks(memory: AgentMemory): AgentMemory {
   const picks = memory.chosenRefs.filter((img) => quizAccepts(memory.attachQuiz, img));
   if (memory.attachQuiz === "frames") return { ...memory, wanFrames: picks.filter(isStillImage).slice(0, 2) };
-  if (memory.attachQuiz === "people") return { ...memory, wanPeople: picks.filter(isStillImage).slice(0, VIDEO_REF_LIMIT) };
+  if (memory.attachQuiz === "people") return { ...memory, wanPeople: picks.filter(isStillImage).slice(0, 2) };
   if (memory.attachQuiz === "clip") return { ...memory, wanClip: picks.find((img) => mediaKindOf(img) === "video") || null };
   if (memory.attachQuiz === "audio") return { ...memory, wanAudio: picks.find((img) => mediaKindOf(img) === "audio") || null };
   return memory;
@@ -1338,7 +1336,7 @@ export function finishAttachQuiz(memory: AgentMemory): AgentMemory {
   const brief = latestUserText(memory);
   let frames = memory.wanFrames.filter(isStillImage).slice(0, 2);
   const named = peopleInText(`${brief}\n${memory.notes}`, getPeople());
-  let people = memory.wanPeople.filter(isStillImage).slice(0, VIDEO_REF_LIMIT);
+  let people = memory.wanPeople.filter(isStillImage).slice(0, 2);
   if (!people.length && named.length) {
     people = personRefImages({ ...memory, personIds: [...new Set([...memory.personIds, ...named.map((person) => person.id)])] }, 6);
   }
@@ -1982,8 +1980,7 @@ function refsForShot(memory: AgentMemory, shot: AgentShot) {
     return combined.slice(0, Math.max(1, max));
   }
   if (memory.wanQuizDone && shot.kind === "video") {
-    const people = imagesFromIds(memory, shot.wanPeopleIds).filter(isStillImage);
-    if (people.length) return people.slice(0, max);
+    return imagesFromIds(memory, shot.wanPeopleIds).filter(isStillImage).slice(0, max);
   }
   if (memory.hasPickedVideoRefs) {
     return withPersonRefs(
