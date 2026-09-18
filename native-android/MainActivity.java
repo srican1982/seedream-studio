@@ -9,6 +9,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(GallerySavePlugin.class);
+        registerPlugin(GalleryPickPlugin.class);
         registerPlugin(KeepAlivePlugin.class);
         super.onCreate(savedInstanceState);
     }

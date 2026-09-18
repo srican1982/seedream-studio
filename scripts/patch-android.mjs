@@ -22,6 +22,7 @@ const permissions = [
 
 await mkdir(javaDir, { recursive: true });
 await copyFile(path.join(native, "GallerySavePlugin.java"), path.join(javaDir, "GallerySavePlugin.java"));
+await copyFile(path.join(native, "GalleryPickPlugin.java"), path.join(javaDir, "GalleryPickPlugin.java"));
 await copyFile(path.join(native, "KeepAlivePlugin.java"), path.join(javaDir, "KeepAlivePlugin.java"));
 await copyFile(path.join(native, "KeepAliveService.java"), path.join(javaDir, "KeepAliveService.java"));
 await copyFile(path.join(native, "MainActivity.java"), path.join(javaDir, "MainActivity.java"));

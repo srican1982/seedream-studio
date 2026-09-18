@@ -1560,6 +1560,7 @@ export function photoLibrary(memory: AgentMemory, extra: LocalImage[] = []): Lib
     if (msg.role !== "user") continue;
     for (const img of msg.images || []) add(img, "upload");
   }
+  for (const img of memory.userRefs) add(img, "upload");
   for (const img of extra) add(img, "upload");
   for (const img of memory.createdStills) add(img, "made");
   for (const shot of memory.shots) {

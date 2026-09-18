@@ -55,11 +55,14 @@ import { downloadResult } from "./api";
 import { withKeepAlive } from "./keep-alive";
 import { fileToDataUri, isAudioFile, isImageFile, isImagePreview, isVideoFile, uuid, videoPosterDataUri } from "./media";
 import { forgetPerson, getPeople, loadPeople, peopleNames, savePerson } from "./people-store";
-import { isNativeApp } from "./native";
+import { isNativeApp, pickGalleryMedia } from "./native";
 import type { LocalImage, ResultKind, StudioResult } from "./types";
 
 const COMPOSER_MIN = 40;
 const COMPOSER_MAX = 200;
+const ATTACH_LIMIT = 16;
+const IMAGE_BYTES_MAX = 35_000_000;
+const MEDIA_BYTES_MAX = 120_000_000;
 
 type MediaViewer = { kind: ResultKind | "audio"; url: string; alt: string };
 
@@ -241,10 +244,12 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     const files = list ? Array.from(list) : [];
     if (!files.length) return;
     const extra: LocalImage[] = [];
-    for (const file of files.slice(0, Math.max(0, 8 - pending.length))) {
-      if (file.size > 35_000_000) continue;
+    const room = Math.max(0, ATTACH_LIMIT - pending.length);
+    for (const file of files.slice(0, room)) {
       const kind = isVideoFile(file) ? "video" : isAudioFile(file) ? "audio" : isImageFile(file) ? "image" : null;
       if (!kind) continue;
+      if (kind === "image" && file.size > IMAGE_BYTES_MAX) continue;
+      if (kind !== "image" && file.size > MEDIA_BYTES_MAX) continue;
       const dataUri = await fileToDataUri(file);
       let preview = kind === "audio" ? "" : dataUri;
       if (kind === "video") {
@@ -261,10 +266,31 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         mime: file.type,
       });
     }
-    setPending((prev) => [...prev, ...extra].slice(0, 8));
+    if (!extra.length) return;
+    setPending((prev) => [...prev, ...extra].slice(0, ATTACH_LIMIT));
+    const current = memoryRef.current;
+    const merged = [...current.userRefs];
+    for (const img of extra) {
+      if (!merged.some((item) => item.id === img.id)) merged.push(img);
+    }
+    commit({
+      ...current,
+      userRefs: merged.slice(0, ATTACH_LIMIT),
+      images: [...current.images, ...extra.filter((img) => img.mediaKind === "image" || !img.mediaKind)].slice(-ATTACH_LIMIT),
+    });
   }
 
-  function pickPhotos() {
+  async function pickPhotos() {
+    const room = Math.max(1, ATTACH_LIMIT - pending.length);
+    if (isNativeApp()) {
+      try {
+        const files = await pickGalleryMedia(room);
+        if (files.length) await addFiles(files);
+        return;
+      } catch {
+        /* fall back to the HTML picker */
+      }
+    }
     fileRef.current?.click();
   }
 
@@ -273,7 +299,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     if (!still) return;
     setPending((prev) => {
       if (prev.some((img) => img.preview === still.preview || img.dataUri === still.dataUri)) return prev;
-      return [...prev, still].slice(0, 8);
+      return [...prev, still].slice(0, ATTACH_LIMIT);
     });
     inputRef.current?.focus();
   }
@@ -673,12 +699,15 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       images,
       createdAt: Date.now(),
     };
+    const attached = images.length
+      ? [...memoryRef.current.userRefs.filter((img) => !images.some((item) => item.id === img.id)), ...images]
+      : memoryRef.current.userRefs;
     let current = pushMessage(
       {
         ...memoryRef.current,
         brief: userMessage.text,
         images: images.length ? images : memoryRef.current.images,
-        userRefs: images.length ? images : memoryRef.current.userRefs,
+        userRefs: attached.slice(0, ATTACH_LIMIT),
         waitingForApproval: false,
         notes: isRememberOnly(userMessage.text)
           ? [memoryRef.current.notes, userMessage.text.replace(/^\s*remember\b[:\s-]*/i, "")].filter(Boolean).join("\n")

@@ -2,6 +2,7 @@ import { Capacitor } from "@capacitor/core";
 import { Camera } from "@capacitor/camera";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
+import { GalleryPick } from "./gallery-pick";
 import { GallerySave } from "./gallery-save";
 import { downloadBlob } from "./media";
 
@@ -54,6 +55,27 @@ async function photosFromPicker(limit: number) {
     files.push(new File([blob], `gallery-${Date.now()}-${index}.${ext}`, { type: blob.type || `image/${ext}` }));
   }
   return files;
+}
+
+export async function pickGalleryMedia(limit: number): Promise<File[]> {
+  if (limit <= 0 || !isNativeApp()) return [];
+  try {
+    const picked = await GalleryPick.pick({ limit });
+    const files: File[] = [];
+    for (const item of picked.files || []) {
+      const src = Capacitor.convertFileSrc(item.path);
+      if (!src) continue;
+      const res = await fetch(src);
+      const blob = await res.blob();
+      const mime = item.mime && item.mime !== "application/octet-stream" ? item.mime : blob.type;
+      files.push(new File([blob], item.name || `media-${files.length + 1}`, { type: mime || blob.type }));
+    }
+    return files;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/cancel/i.test(message)) return [];
+    throw error instanceof Error ? error : new Error("Could not open the gallery.");
+  }
 }
 
 export async function pickGalleryImages(limit: number): Promise<File[]> {
