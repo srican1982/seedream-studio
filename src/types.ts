@@ -17,11 +17,15 @@ export type ImageTabId =
 export type VideoTabId = "seedance-2-5" | "seedance-2-0" | "seedance-1-5" | "wan-3" | "wan-3-prime";
 export type TabId = ImageTabId | VideoTabId;
 
+export type LocalMediaKind = "image" | "video" | "audio";
+
 export type LocalImage = {
   id: string;
   name: string;
   preview: string;
   dataUri: string;
+  mediaKind?: LocalMediaKind;
+  mime?: string;
 };
 
 export type ResultKind = "image" | "video";
@@ -39,6 +43,8 @@ export type StudioResult = {
 export type TabState = {
   images: LocalImage[];
   wanFrames?: LocalImage[];
+  wanVideos?: string[];
+  wanAudios?: string[];
   prompt: string;
   aspect: Aspect;
   quality: Quality;

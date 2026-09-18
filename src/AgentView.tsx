@@ -6,11 +6,15 @@ import {
   applyRecreateEdits,
   approvalText,
   activeChatId,
+  advanceAttachQuiz,
+  beginAttachQuiz,
   beginRecreate,
   deleteAgentChat,
   describePlan,
   emptyAgentMemory,
+  isAttachQuiz,
   isContinue,
+  isQuizAdvance,
   continueStatus,
   isRecreate,
   isForgetPerson,
@@ -20,9 +24,14 @@ import {
   lastActionableShot,
   listAgentChats,
   loadAgentMemory,
+  mediaKindOf,
+  nextPendingShot,
   openAgentChat,
   photoLibrary,
   planAgentJob,
+  quizAccepts,
+  quizButtonLabel,
+  quizStepLimit,
   recreateChangeText,
   recreateQuestion,
   recreateRefLimit,
@@ -41,15 +50,22 @@ import {
 } from "./agent";
 import { downloadResult } from "./api";
 import { withKeepAlive } from "./keep-alive";
-import { fileToDataUri, uuid } from "./media";
+import { fileToDataUri, isAudioFile, isImageFile, isVideoFile, uuid } from "./media";
 import { forgetPerson, getPeople, loadPeople, peopleNames, savePerson } from "./people-store";
-import { isNativeApp, pickGalleryImages } from "./native";
+import { isNativeApp } from "./native";
 import type { LocalImage, ResultKind, StudioResult } from "./types";
 
 const COMPOSER_MIN = 40;
 const COMPOSER_MAX = 200;
 
-type MediaViewer = { kind: ResultKind; url: string; alt: string };
+type MediaViewer = { kind: ResultKind | "audio"; url: string; alt: string };
+
+function MediaThumb({ item }: { item: LocalImage }) {
+  const kind = mediaKindOf(item);
+  if (kind === "video") return <video src={item.preview || item.dataUri} muted playsInline preload="metadata" />;
+  if (kind === "audio") return <span className="photo-bar-audio">Audio</span>;
+  return <img src={item.preview || item.dataUri} alt="" />;
+}
 
 type AgentViewProps = {
   chatsOpen?: boolean;
@@ -205,18 +221,23 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     if (!files.length) return;
     const extra: LocalImage[] = [];
     for (const file of files.slice(0, Math.max(0, 8 - pending.length))) {
+      if (file.size > 35_000_000) continue;
+      const kind = isVideoFile(file) ? "video" : isAudioFile(file) ? "audio" : isImageFile(file) ? "image" : null;
+      if (!kind) continue;
       const dataUri = await fileToDataUri(file);
-      extra.push({ id: uuid(), name: file.name || "photo", preview: dataUri, dataUri });
+      extra.push({
+        id: uuid(),
+        name: file.name || kind,
+        preview: kind === "audio" ? "" : dataUri,
+        dataUri,
+        mediaKind: kind,
+        mime: file.type,
+      });
     }
-    setPending((prev) => [...prev, ...extra].slice(0, 6));
+    setPending((prev) => [...prev, ...extra].slice(0, 8));
   }
 
-  async function pickPhotos() {
-    if (isNativeApp()) {
-      const files = await pickGalleryImages(Math.max(1, 8 - pending.length));
-      await addFiles(files);
-      return;
-    }
+  function pickPhotos() {
     fileRef.current?.click();
   }
 
@@ -270,7 +291,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         ...current,
         awaitingVideoRefs: true,
         hasPickedVideoRefs: false,
-        chosenRefs: attached.slice(0, VIDEO_REF_LIMIT),
+        chosenRefs: attached.filter((img) => mediaKindOf(img) === "image").slice(0, VIDEO_REF_LIMIT),
       },
       {
         id: uuid(),
@@ -282,19 +303,87 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     commit(next);
   }
 
+  function askAttachQuiz(current: AgentMemory, attached: LocalImage[]) {
+    const started = beginAttachQuiz(current, attached);
+    commit(
+      pushMessage(started.memory, {
+        id: uuid(),
+        role: "assistant",
+        text: started.question,
+        createdAt: Date.now(),
+      })
+    );
+  }
+
+  async function finishQuizStep() {
+    if (busy || !isAttachQuiz(memoryRef.current)) return;
+    const step = advanceAttachQuiz(memoryRef.current);
+    if (!step.done) {
+      commit(
+        pushMessage(step.memory, {
+          id: uuid(),
+          role: "assistant",
+          text: step.question,
+          createdAt: Date.now(),
+        })
+      );
+      return;
+    }
+    const note = step.dropped
+      ? "Start/end frames cannot use a clip or song in the same call. I’ll pin the frames and skip those files."
+      : "";
+    commit(
+      note
+        ? pushMessage(step.memory, {
+            id: uuid(),
+            role: "assistant",
+            text: note,
+            createdAt: Date.now(),
+          })
+        : step.memory
+    );
+    setBusy(true);
+    setProgress(null);
+    try {
+      await withKeepAlive("Working… You can switch apps.", () => planAndRun(memoryRef.current));
+    } catch (error) {
+      commit(
+        pushMessage(memoryRef.current, {
+          id: uuid(),
+          role: "assistant",
+          text: error instanceof Error ? error.message : "Something went wrong.",
+          createdAt: Date.now(),
+        })
+      );
+    } finally {
+      setBusy(false);
+      setProgress(null);
+    }
+  }
+
   function tapLibraryPhoto(photo: LibraryPhoto) {
     const current = memoryRef.current;
-    if ((!current.awaitingVideoRefs && !current.awaitingRecreate) || busy) return;
+    const quiz = isAttachQuiz(current);
+    if ((!current.awaitingVideoRefs && !current.awaitingRecreate && !quiz) || busy) return;
+    if (quiz && !quizAccepts(current.attachQuiz, photo.image)) return;
     if (current.chosenRefs.some((img) => img.id === photo.id)) return;
     const shot = current.shots.find((item) => item.id === current.recreateShotId);
-    const limit = current.awaitingRecreate ? recreateRefLimit(shot?.kind || "video") : VIDEO_REF_LIMIT;
+    const limit = quiz
+      ? quizStepLimit(current.attachQuiz)
+      : current.awaitingRecreate
+        ? recreateRefLimit(shot?.kind || "video")
+        : VIDEO_REF_LIMIT;
+    if (limit <= 1) {
+      commit({ ...current, chosenRefs: [photo.image] });
+      return;
+    }
     if (current.chosenRefs.length >= limit) return;
     commit({ ...current, chosenRefs: [...current.chosenRefs, photo.image] });
   }
 
   function removeChosen(id: string) {
     const current = memoryRef.current;
-    if ((!current.awaitingVideoRefs && !current.awaitingRecreate) || busy) return;
+    if ((!current.awaitingVideoRefs && !current.awaitingRecreate && !isAttachQuiz(current)) || busy) return;
     commit({ ...current, chosenRefs: current.chosenRefs.filter((img) => img.id !== id) });
   }
 
@@ -481,6 +570,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
             personIds: planned.personIds,
             waitingForApproval: false,
             awaitingVideoRefs: false,
+            attachQuiz: "",
             awaitingRecreate: false,
             recreateShotId: "",
             recreateNote: "",
@@ -504,6 +594,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         shots: [...kept, ...planned.shots],
         waitingForApproval: true,
         awaitingVideoRefs: false,
+        attachQuiz: "",
         awaitingRecreate: false,
         recreateShotId: "",
         recreateNote: "",
@@ -599,7 +690,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       commit(current);
     }
 
-    if (isContinue(userMessage.text) && !images.length) {
+    if (isContinue(userMessage.text) && !images.length && !isAttachQuiz(current)) {
       const step = continueStatus(current);
       commit(
         pushMessage(step.memory, {
@@ -637,6 +728,35 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     if (current.awaitingRecreate) {
       current = { ...current, awaitingRecreate: false, recreateShotId: "", recreateNote: "", waitingForApproval: false };
       commit(current);
+    }
+
+    if (isAttachQuiz(current) && !isRecreate(userMessage.text) && !asRecreate) {
+      if (isQuizAdvance(userMessage.text) || !userMessage.text.trim()) {
+        await finishQuizStep();
+        return;
+      }
+      if (askedForVideo(userMessage.text) || askedToGenerate(userMessage.text)) {
+        askAttachQuiz(current, images);
+        return;
+      }
+      const merged = [...current.chosenRefs];
+      for (const img of images) {
+        if (quizAccepts(current.attachQuiz, img) && !merged.some((item) => item.id === img.id)) merged.push(img);
+      }
+      commit(
+        pushMessage(
+          { ...current, chosenRefs: merged.slice(0, quizStepLimit(current.attachQuiz)) },
+          {
+            id: uuid(),
+            role: "assistant",
+            text: images.length
+              ? "Added. Tap more on the bar, or tap Skip / None."
+              : "Tap the bar, then Skip / None or Next.",
+            createdAt: Date.now(),
+          }
+        )
+      );
+      return;
     }
 
     if (current.awaitingVideoRefs && !isRecreate(userMessage.text) && !asRecreate) {
@@ -686,6 +806,11 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       return;
     }
 
+    if (askedForVideo(userMessage.text) && !isContinue(userMessage.text) && !asRecreate && !(isRecreate(userMessage.text) && !images.length)) {
+      askAttachQuiz(current, images);
+      return;
+    }
+
     if (askedToGenerate(userMessage.text) && !isContinue(userMessage.text) && !asRecreate && !(isRecreate(userMessage.text) && !images.length)) {
       askForVideoPhotos(current, images);
       return;
@@ -728,11 +853,23 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
   }
 
   const library = photoLibrary(memory, pending);
+  const quiz = isAttachQuiz(memory) && !busy;
   const recreating = memory.awaitingRecreate && !busy && Boolean(recreateShot(memory, ""));
-  const picking = (memory.awaitingVideoRefs || memory.awaitingRecreate) && !busy;
-  const showApprove = memory.waitingForApproval && !busy && !memory.awaitingVideoRefs && lastActionableShot(memory);
+  const picking = (memory.awaitingVideoRefs || memory.awaitingRecreate || quiz) && !busy;
+  const showQueueContinue = Boolean(nextPendingShot(memory)) && memory.waitingForApproval && !busy && !quiz && !memory.awaitingVideoRefs;
+  const showRecreateThis = Boolean(lastActionableShot(memory)) && memory.waitingForApproval && !busy && !quiz && !memory.awaitingVideoRefs;
   const recreateKind = memory.shots.find((item) => item.id === memory.recreateShotId)?.kind || "video";
-  const photoLimit = recreating ? recreateRefLimit(recreateKind) : VIDEO_REF_LIMIT;
+  const photoLimit = recreating ? recreateRefLimit(recreateKind) : quiz ? quizStepLimit(memory.attachQuiz) : VIDEO_REF_LIMIT;
+  const quizTitle =
+    memory.attachQuiz === "frames"
+      ? "Start / end frames"
+      : memory.attachQuiz === "people"
+        ? "People photos"
+        : memory.attachQuiz === "clip"
+          ? "Motion clip"
+          : memory.attachQuiz === "audio"
+            ? "Sound"
+            : "";
 
   return (
     <div className="chat">
@@ -740,7 +877,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         ref={fileRef}
         className="sr-only"
         type="file"
-        accept="image/*"
+        accept="image/*,video/*,audio/*"
         multiple
         onChange={(e: ChangeEvent<HTMLInputElement>) => {
           const picked = Array.from(e.target.files || []);
@@ -753,11 +890,13 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         <span>
           {recreating
             ? `Change photos · ${memory.chosenRefs.length}/${photoLimit}`
-            : picking
-              ? `Tap photos in order · ${memory.chosenRefs.length}/${VIDEO_REF_LIMIT}`
-              : library.length
-                ? "Photos"
-                : ""}
+            : quiz
+              ? `${quizTitle} · ${memory.chosenRefs.length}/${photoLimit}`
+              : picking
+                ? `Tap photos in order · ${memory.chosenRefs.length}/${VIDEO_REF_LIMIT}`
+                : library.length
+                  ? "Files"
+                  : ""}
         </span>
         <button
           className="link"
@@ -826,23 +965,26 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
             <div className="photo-bar" role="list">
               {library.map((photo) => {
                 const order = memory.chosenRefs.findIndex((img) => img.id === photo.id);
+                const dimmed = quiz && !quizAccepts(memory.attachQuiz, photo.image);
                 return (
-                  <div key={photo.id} className={`photo-bar-item${order >= 0 ? " on" : ""}`} role="listitem">
+                  <div key={photo.id} className={`photo-bar-item${order >= 0 ? " on" : ""}${dimmed ? " dim" : ""}`} role="listitem">
                     <button
                       type="button"
                       className="photo-bar-hit"
-                      disabled={!picking}
+                      disabled={!picking || dimmed}
                       onClick={() => tapLibraryPhoto(photo)}
                     >
-                      <img src={photo.image.preview || photo.image.dataUri} alt="" />
+                      <MediaThumb item={photo.image} />
                     </button>
                     <span className="photo-bar-num">{photo.label}</span>
-                    <span className="photo-bar-kind">{photo.kind === "made" ? "Made" : "Yours"}</span>
+                    <span className="photo-bar-kind">
+                      {photo.mediaKind === "video" ? "Clip" : photo.mediaKind === "audio" ? "Sound" : photo.kind === "made" ? "Made" : "Yours"}
+                    </span>
                     {order >= 0 ? <span className="photo-bar-order">{order + 1}</span> : null}
                     <button
                       type="button"
                       className="photo-bar-del"
-                      aria-label="Delete photo"
+                      aria-label="Delete file"
                       onClick={() => deleteLibraryPhoto(photo.id)}
                     >
                       ×
@@ -855,7 +997,9 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
             <p className="photo-picked-empty">
               {recreating
                 ? "No photos yet. Attach some, or tap Recreate to keep the same pictures."
-                : "No photos yet. Attach some, or tap Use these for a video with no stills."}
+                : quiz
+                  ? "Attach files if you want, or tap Skip / None."
+                  : "No photos yet. Attach some, or tap Skip / None."}
             </p>
           )}
           {picking ? (
@@ -863,22 +1007,22 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
               {memory.chosenRefs.length ? (
                 memory.chosenRefs.map((img, index) => (
                   <span key={img.id} className="photo-picked-thumb">
-                    <img src={img.preview || img.dataUri} alt="" />
+                    <MediaThumb item={img} />
                     <em>{index + 1}</em>
-                    <button type="button" onClick={() => removeChosen(img.id)} aria-label="Remove photo">
+                    <button type="button" onClick={() => removeChosen(img.id)} aria-label="Remove file">
                       ×
                     </button>
                   </span>
                 ))
               ) : (
-                <p className="photo-picked-empty">No photos selected yet</p>
+                <p className="photo-picked-empty">Nothing selected yet</p>
               )}
               <button
                 className="photo-use"
                 type="button"
-                onClick={() => (recreating ? void onSend(draft || "recreate this", true) : void usePickedPhotos())}
+                onClick={() => (recreating ? void onSend(draft || "recreate this", true) : quiz ? void finishQuizStep() : void usePickedPhotos())}
               >
-                {recreating ? "Recreate" : "Use these"}
+                {recreating ? "Recreate" : quiz ? quizButtonLabel(memory) : memory.chosenRefs.length ? "Next" : "Skip / None"}
               </button>
             </div>
           ) : null}
@@ -889,24 +1033,33 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime at 480p. Type Wan 3.0, Grok, or Gemini 2.5 Pro if you want a different model. I’ll do one piece at a time so you can continue or recreate.</p>
+            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime at 480p. Type Wan 3.0 if you want the slower model. After a video I’ll ask start/end frames, people, a clip, then a sound — Skip / None is fine on each.</p>
           </div>
         ) : (
           memory.messages.map((message) => (
             <article key={message.id} className={`bubble ${message.role}`}>
               {message.images?.length ? (
                 <div className="bubble-photos">
-                  {message.images.map((img) => (
-                    <button
-                      key={img.id}
-                      type="button"
-                      className="media-hit"
-                      aria-label={`Open ${img.name || "photo"}`}
-                      onClick={() => openMedia({ kind: "image", url: img.preview || img.dataUri, alt: img.name })}
-                    >
-                      <img src={img.preview} alt={img.name} />
-                    </button>
-                  ))}
+                  {message.images.map((img) => {
+                    const kind = mediaKindOf(img);
+                    return (
+                      <button
+                        key={img.id}
+                        type="button"
+                        className="media-hit"
+                        aria-label={`Open ${img.name || kind}`}
+                        onClick={() =>
+                          openMedia({
+                            kind: kind === "audio" ? "audio" : kind === "video" ? "video" : "image",
+                            url: img.preview || img.dataUri,
+                            alt: img.name,
+                          })
+                        }
+                      >
+                        <MediaThumb item={img} />
+                      </button>
+                    );
+                  })}
                 </div>
               ) : null}
               {message.text ? <p>{message.text}</p> : null}
@@ -989,21 +1142,25 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
               </button>
             </div>
           </div>
-        ) : showApprove ? (
+        ) : showQueueContinue || showRecreateThis ? (
           <div className="chat-approve">
-            <button type="button" onClick={() => void onSend("continue")}>
-              Continue
-            </button>
-            <button type="button" onClick={() => void onSend("recreate this")}>
-              Recreate this
-            </button>
+            {showQueueContinue ? (
+              <button type="button" onClick={() => void onSend("continue")}>
+                Continue
+              </button>
+            ) : null}
+            {showRecreateThis ? (
+              <button type="button" onClick={() => void onSend("recreate this")}>
+                Recreate this
+              </button>
+            ) : null}
           </div>
         ) : null}
         {pending.length > 0 ? (
           <div className="chat-pending">
             {pending.map((img) => (
               <span key={img.id} className="chat-pending-thumb">
-                <img src={img.preview} alt="" />
+                <MediaThumb item={img} />
                 <button type="button" onClick={() => setPending((prev) => prev.filter((item) => item.id !== img.id))}>
                   ×
                 </button>
@@ -1013,14 +1170,14 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         ) : null}
         {recreating ? null : (
           <div className="composer">
-            <button className="composer-icon" type="button" onClick={() => void pickPhotos()} aria-label="Add photo">
+            <button className="composer-icon" type="button" onClick={() => void pickPhotos()} aria-label="Add file">
               +
             </button>
             <textarea
               ref={inputRef}
               rows={1}
               value={draft}
-              placeholder={picking ? "Tap photos above, or add another" : "Ask anything"}
+              placeholder={picking ? "Tap files above, or Skip / None" : "Ask anything"}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKey}
             />
@@ -1032,7 +1189,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       </div>
 
       {viewer ? (
-        <div className="media-viewer" role="dialog" aria-modal="true" aria-label={viewer.kind === "video" ? "Video" : "Image"}>
+        <div className="media-viewer" role="dialog" aria-modal="true" aria-label={viewer.kind === "video" ? "Video" : viewer.kind === "audio" ? "Audio" : "Image"}>
           <div className="media-viewer-bar">
             <button type="button" className="media-viewer-back" onClick={() => closeMedia()}>
               Back
@@ -1041,6 +1198,8 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
           <div className="media-viewer-stage">
             {viewer.kind === "video" ? (
               <video src={viewer.url} controls autoPlay playsInline />
+            ) : viewer.kind === "audio" ? (
+              <audio src={viewer.url} controls autoPlay />
             ) : (
               <img src={viewer.url} alt={viewer.alt} />
             )}

@@ -691,10 +691,25 @@ code { color: var(--accent-2); }
 }
 .photo-bar-hit:disabled { opacity: 1; }
 .photo-tray.picking .photo-bar-hit { cursor: pointer; }
-.photo-bar-item img {
+.photo-bar-item img,
+.photo-bar-item video {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.photo-bar-item.dim { opacity: 0.4; }
+.photo-bar-audio {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: #1c1d26;
+  color: #d7d8e0;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 .photo-bar-del {
   position: absolute;
@@ -778,7 +793,8 @@ code { color: var(--accent-2); }
   width: 52px;
   height: 52px;
 }
-.photo-picked-thumb img {
+.photo-picked-thumb img,
+.photo-picked-thumb video {
   width: 100%;
   height: 100%;
   object-fit: cover;
@@ -1036,7 +1052,8 @@ body.kb-open .composer textarea {
 }
 .chat-pending { display: flex; gap: 8px; padding-bottom: 8px; }
 .chat-pending-thumb { position: relative; width: 48px; height: 48px; }
-.chat-pending-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }
+.chat-pending-thumb img,
+.chat-pending-thumb video { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }
 .chat-pending-thumb button {
   position: absolute; top: -6px; right: -6px;
   width: 18px; height: 18px; border: 0; border-radius: 50%;

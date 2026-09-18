@@ -54,6 +54,10 @@ function slimMemory(memory: ChatBlob, dropBytes: boolean): ChatBlob {
     userRefs: list(memory.userRefs),
     createdStills: list(memory.createdStills),
     chosenRefs: list(memory.chosenRefs),
+    wanFrames: list(memory.wanFrames),
+    wanPeople: list(memory.wanPeople),
+    wanClip: memory.wanClip ? img(memory.wanClip as ImageBlob) : null,
+    wanAudio: memory.wanAudio ? img(memory.wanAudio as ImageBlob) : null,
     lastStill: memory.lastStill ? img(memory.lastStill as ImageBlob) : null,
     shots,
     messages,
@@ -68,6 +72,10 @@ function textOnlyMemory(memory: ChatBlob): ChatBlob {
     userRefs: [],
     createdStills: [],
     chosenRefs: [],
+    wanFrames: [],
+    wanPeople: [],
+    wanClip: null,
+    wanAudio: null,
     lastStill: null,
     messages: Array.isArray(slim.messages)
       ? slim.messages.map((message) => ({ ...(message as ChatBlob), images: undefined }))

@@ -49,9 +49,27 @@ export function isImageFile(file: File) {
   return /\.(jpe?g|png|webp|gif|heic|heif|bmp|avif)$/i.test(file.name);
 }
 
+export function isVideoFile(file: File) {
+  if (file.type.startsWith("video/")) return true;
+  return /\.(mp4|webm|mov|m4v)$/i.test(file.name);
+}
+
+export function isAudioFile(file: File) {
+  if (file.type.startsWith("audio/")) return true;
+  return /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(file.name);
+}
+
 export function isUsableReferenceImage(value: string) {
   if (!value) return false;
   if (/^data:image\/(png|jpe?g|webp|heic|heif|avif);base64,/i.test(value)) {
+    return (value.split(",")[1] || "").replace(/\s/g, "").length > 32;
+  }
+  return /^https?:\/\//i.test(value) && !/localhost|_capacitor_file_|_capacitor_content_/i.test(value);
+}
+
+export function isUsableMediaUrl(value: string) {
+  if (!value) return false;
+  if (/^data:(image|video|audio)\//i.test(value)) {
     return (value.split(",")[1] || "").replace(/\s/g, "").length > 32;
   }
   return /^https?:\/\//i.test(value) && !/localhost|_capacitor_file_|_capacitor_content_/i.test(value);
@@ -65,6 +83,7 @@ export async function blobToJpegDataUri(blob: Blob, maxEdge = 1400, quality = 0.
 }
 
 export async function fileToDataUri(file: File, maxEdge = 1600, quality = 0.88): Promise<string> {
+  if (!isImageFile(file)) return readAsDataUrl(file);
   try {
     return await compressViaCanvas(file, maxEdge, quality);
   } catch {

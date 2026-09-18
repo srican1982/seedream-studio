@@ -11,7 +11,7 @@ import {
   wanPositivePrompt,
   wanSize,
 } from "./models";
-import { fileToDataUri, isImageFile, isUsableReferenceImage, uuid } from "./media";
+import { fileToDataUri, isImageFile, isUsableMediaUrl, isUsableReferenceImage, uuid } from "./media";
 import { nativePollRunware, nativeSleep, withKeepAlive } from "./keep-alive";
 import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
@@ -222,6 +222,26 @@ function isFinishedRow(row: Record<string, unknown>) {
       row.imageBase64Data ||
       row.videoURL
   );
+}
+
+async function uploadRunwareMedia(media: string): Promise<string> {
+  const value = media.trim();
+  if (!value) throw new Error("Missing video or audio file.");
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) return value;
+  if (isUsableMediaUrl(value) && /^https?:\/\//i.test(value)) return value;
+  const payload = await postRunware([
+    {
+      taskType: "mediaStorage",
+      taskUUID: uuid(),
+      operation: "upload",
+      media: value,
+    },
+  ]);
+  if (payload.errors?.length) throw new Error(errorMessage(payload, "Could not upload the video or audio."));
+  const row = payload.data?.[0] || {};
+  const uploaded = String(row.mediaUUID || row.mediaURL || "");
+  if (!uploaded) throw new Error("Could not upload the video or audio.");
+  return String(row.mediaUUID || row.mediaURL);
 }
 
 function uuidFromMediaUrl(url: string) {
@@ -655,6 +675,8 @@ export async function generateVideo(
 
   if (VIDEO_WAN_MODELS.includes(tab)) {
     const frames = (state.wanFrames || []).map((img) => img.dataUri).filter(isUsableReferenceImage);
+    const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
+    const audios = await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
     if (frames.length) {
       task.inputs = {
         frameImages: frames.slice(0, 2).map((image, index) => ({
@@ -663,13 +685,18 @@ export async function generateVideo(
         })),
       };
       task.resolution = resolution;
-    } else if (images.length) {
-      task.inputs = { referenceImages: images };
-      task.resolution = resolution;
     } else {
-      const size = wanSize(state.aspect, resolution);
-      task.width = size.width;
-      task.height = size.height;
+      const inputs: Record<string, unknown> = {};
+      if (images.length) inputs.referenceImages = images;
+      if (videos.length) inputs.referenceVideos = videos;
+      if (audios.length) inputs.referenceAudios = audios;
+      if (Object.keys(inputs).length) task.inputs = inputs;
+      if (images.length || videos.length || audios.length) task.resolution = resolution;
+      else {
+        const size = wanSize(state.aspect, resolution);
+        task.width = size.width;
+        task.height = size.height;
+      }
     }
     task.safety = { checkContent: state.safety, mode: "fast" };
     task.settings = {
