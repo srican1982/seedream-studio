@@ -35,6 +35,7 @@ export type AgentShot = {
   prompt: string;
   duration: number;
   resolution: VideoResolution;
+  aspect: Aspect;
   model: ImageTabId | VideoTabId;
   status: "pending" | "running" | "done" | "error";
   refSource: AgentRefSource;
@@ -134,7 +135,56 @@ export function modelFromText(text: string, kind: AgentShotKind) {
 
 export const VIDEO_REF_LIMIT = 10;
 
-export type AttachQuizStep = "" | "frames" | "people" | "clip" | "audio";
+export type AttachQuizStep = "" | "frames" | "people" | "clip" | "audio" | "size";
+
+export type WanSizeOption = {
+  id: string;
+  label: string;
+  aspect: Aspect;
+  resolution: VideoResolution;
+};
+
+export const WAN_SIZE_OPTIONS: WanSizeOption[] = [
+  { id: "480p-16:9", label: "480p landscape", aspect: "16:9", resolution: "480p" },
+  { id: "720p-16:9", label: "720p landscape", aspect: "16:9", resolution: "720p" },
+  { id: "1080p-16:9", label: "1080p landscape", aspect: "16:9", resolution: "1080p" },
+  { id: "480p-9:16", label: "480p vertical", aspect: "9:16", resolution: "480p" },
+  { id: "720p-9:16", label: "720p vertical", aspect: "9:16", resolution: "720p" },
+  { id: "1080p-9:16", label: "1080p vertical", aspect: "9:16", resolution: "1080p" },
+];
+
+function isQuizStep(value: string): value is Exclude<AttachQuizStep, ""> {
+  return value === "frames" || value === "people" || value === "clip" || value === "audio" || value === "size";
+}
+
+export function defaultVideoSize(brief: string): WanSizeOption {
+  const vertical = /\b(instagram|reel|reels|vertical|portrait|9\s*[:x]\s*16)\b/i.test(brief);
+  const id = vertical ? "480p-9:16" : "480p-16:9";
+  return WAN_SIZE_OPTIONS.find((item) => item.id === id) || WAN_SIZE_OPTIONS[0];
+}
+
+export function parseWanSizeText(text: string): WanSizeOption | null {
+  const resRaw = /\b(480p|720p|1080p)\b/i.exec(text)?.[1].toLowerCase();
+  const resolution = resRaw === "720p" || resRaw === "1080p" || resRaw === "480p" ? resRaw : "";
+  const vertical = /\b(instagram|reel|reels|vertical|portrait|9\s*[:x]\s*16)\b/i.test(text);
+  const landscape = /\b(landscape|widescreen|16\s*[:x]\s*9)\b/i.test(text);
+  if (!resolution && !vertical && !landscape) return null;
+  const aspect: Aspect = vertical && !landscape ? "9:16" : "16:9";
+  const tier: VideoResolution = resolution || "480p";
+  return WAN_SIZE_OPTIONS.find((item) => item.aspect === aspect && item.resolution === tier) || null;
+}
+
+export function pickWanSize(memory: AgentMemory, id: string): AgentMemory {
+  const opt = WAN_SIZE_OPTIONS.find((item) => item.id === id);
+  if (!opt) return memory;
+  return { ...memory, wanSizeId: opt.id, wanAspect: opt.aspect, wanResolution: opt.resolution };
+}
+
+export function videoSizeFromMemory(memory: AgentMemory, brief = latestUserText(memory)): WanSizeOption {
+  const picked = WAN_SIZE_OPTIONS.find((item) => item.id === memory.wanSizeId);
+  if (picked) return picked;
+  return defaultVideoSize(brief);
+}
 
 export function mediaKindOf(img: LocalImage): LocalMediaKind {
   if (img.mediaKind === "video" || img.mediaKind === "audio" || img.mediaKind === "image") return img.mediaKind;
@@ -171,6 +221,9 @@ export type AgentMemory = {
   wanClip: LocalImage | null;
   wanAudio: LocalImage | null;
   wanDroppedClipAudio: boolean;
+  wanSizeId: string;
+  wanAspect: Aspect;
+  wanResolution: VideoResolution;
   personIds: string[];
   awaitingTrainName: boolean;
   awaitingTrainPhotos: boolean;
@@ -202,6 +255,9 @@ export function emptyAgentMemory(): AgentMemory {
     wanClip: null,
     wanAudio: null,
     wanDroppedClipAudio: false,
+    wanSizeId: "",
+    wanAspect: "16:9",
+    wanResolution: "480p",
     personIds: [],
     awaitingTrainName: false,
     awaitingTrainPhotos: false,
@@ -245,7 +301,8 @@ function parseStoredMemory(parsed: AgentMemory): AgentMemory {
     shots: Array.isArray(parsed.shots)
       ? parsed.shots.map((shot) => ({
           ...shot,
-          resolution: "480p" as const,
+          resolution: shot.kind === "video" && (shot.resolution === "720p" || shot.resolution === "1080p") ? shot.resolution : "480p",
+          aspect: shot.kind === "video" && shot.aspect === "9:16" ? "9:16" : shot.kind === "image" ? "3:4" : "16:9",
           model: shot.kind === "image" ? "qwen-3-pro" : isVideoTab(String(shot.model)) ? shot.model : "wan-3-prime",
           refSource: shot.refSource || (shot.kind === "video" ? "created" : "user"),
           useLastFrame: Boolean(shot.useLastFrame),
@@ -266,13 +323,16 @@ function parseStoredMemory(parsed: AgentMemory): AgentMemory {
     recreateShotId: parsed.recreateShotId || "",
     recreateNote: parsed.recreateNote || "",
     hasPickedVideoRefs: Boolean(parsed.hasPickedVideoRefs),
-    attachQuiz: parsed.attachQuiz === "frames" || parsed.attachQuiz === "people" || parsed.attachQuiz === "clip" || parsed.attachQuiz === "audio" ? parsed.attachQuiz : "",
+    attachQuiz: isQuizStep(String(parsed.attachQuiz || "")) ? parsed.attachQuiz : "",
     wanQuizDone: Boolean(parsed.wanQuizDone),
     wanFrames: parseMediaList(parsed.wanFrames),
     wanPeople: parseMediaList(parsed.wanPeople),
     wanClip: parsed.wanClip && typeof parsed.wanClip === "object" ? parsed.wanClip : null,
     wanAudio: parsed.wanAudio && typeof parsed.wanAudio === "object" ? parsed.wanAudio : null,
     wanDroppedClipAudio: Boolean(parsed.wanDroppedClipAudio),
+    wanSizeId: typeof parsed.wanSizeId === "string" ? parsed.wanSizeId : "",
+    wanAspect: parsed.wanAspect === "9:16" ? "9:16" : "16:9",
+    wanResolution: parsed.wanResolution === "720p" || parsed.wanResolution === "1080p" ? parsed.wanResolution : "480p",
     personIds: Array.isArray(parsed.personIds) ? parsed.personIds.filter((id): id is string => typeof id === "string") : [],
     awaitingTrainName: Boolean(parsed.awaitingTrainName),
     awaitingTrainPhotos: Boolean(parsed.awaitingTrainPhotos),
@@ -288,10 +348,7 @@ function sanitizeMemory(memory: AgentMemory): AgentMemory {
   const usable = Boolean(target?.result?.url || target?.prompt);
   const canRecreate = Boolean(memory.awaitingRecreate && target && usable);
   const canApprove = Boolean(nextPendingShot(memory) || lastActionableShot(memory));
-  const quiz =
-    memory.attachQuiz === "frames" || memory.attachQuiz === "people" || memory.attachQuiz === "clip" || memory.attachQuiz === "audio"
-      ? memory.attachQuiz
-      : "";
+  const quiz = isQuizStep(memory.attachQuiz || "") ? memory.attachQuiz : "";
   return {
     ...memory,
     awaitingRecreate: canRecreate,
@@ -491,10 +548,6 @@ function clipVideoDuration(model: VideoTabId, seconds: number) {
   return allowed.reduce((best, d) => (Math.abs(d - want) < Math.abs(best - want) ? d : best), allowed[0]);
 }
 
-function clipVideoResolution(_model?: VideoTabId, _asked?: string): VideoResolution {
-  return "480p";
-}
-
 function defaultImageModel(): ImageTabId {
   return "qwen-3-pro";
 }
@@ -629,7 +682,7 @@ How to write shot.prompt:
 - Training photos often come from another room. Never copy those rooms into the movie. If clip-end exists, that place is the whole clip. Do not open or end in a bedroom.
 - Qwen 3.0 Pro can only take 3 reference images. Wan can take 10. If there are more, keep the ones the user cares about most, usually new uploads first.
 - For video, describe the motion they asked in the same explicit way. Include scene sound. Add spoken words only if they asked someone to say them.
-- Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. Video is always 480p. Duration is what they said, else 10s. Wan max 30s per clip.
+- Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. Video size is the quiz pick (480p/720p/1080p, landscape 16:9 or vertical 9:16). Duration is what they said, else 10s. Wan max 30s per clip.
 
 If they are only chatting, return shots: [] and put your answer in reply.
 reply must be one short sentence or "". Never put JSON, markdown, or the generator prompt in reply. The Qwen/Wan instruction belongs only in shots[].prompt.
@@ -1044,8 +1097,8 @@ function askedSeconds(text: string) {
   return 0;
 }
 
-type ShotDraft = Omit<AgentShot, "id" | "status" | "error" | "result" | "wanFrameIds" | "wanPeopleIds" | "wanClipId" | "wanAudioId"> &
-  Partial<Pick<AgentShot, "wanFrameIds" | "wanPeopleIds" | "wanClipId" | "wanAudioId">>;
+type ShotDraft = Omit<AgentShot, "id" | "status" | "error" | "result" | "wanFrameIds" | "wanPeopleIds" | "wanClipId" | "wanAudioId" | "aspect"> &
+  Partial<Pick<AgentShot, "wanFrameIds" | "wanPeopleIds" | "wanClipId" | "wanAudioId" | "aspect">>;
 
 function makeShot(partial: ShotDraft): AgentShot {
   return {
@@ -1053,6 +1106,7 @@ function makeShot(partial: ShotDraft): AgentShot {
     wanPeopleIds: [],
     wanClipId: "",
     wanAudioId: "",
+    aspect: "16:9",
     ...partial,
     id: uuid(),
     status: "pending",
@@ -1200,7 +1254,7 @@ export function videoRefQuestion() {
 }
 
 export function isAttachQuiz(memory: AgentMemory) {
-  return memory.attachQuiz === "frames" || memory.attachQuiz === "people" || memory.attachQuiz === "clip" || memory.attachQuiz === "audio";
+  return isQuizStep(memory.attachQuiz);
 }
 
 export function isQuizAdvance(text: string) {
@@ -1209,16 +1263,19 @@ export function isQuizAdvance(text: string) {
 
 export function attachQuizQuestion(step: AttachQuizStep) {
   if (step === "frames") {
-    return "Start and end frames: tap 0–2 photos on the bar. First tap is the first frame, second tap is the last. Then tap Skip / None, or Next if you picked some.\n\nආරම්භය සහ අවසානය: තීරුවේ 0–2 පොටෝ tap කරන්න. පළවෙනි tap එක first frame. ඊට පස්සේ Skip / None.";
+    return "Question 1/5 — Start and end frames: tap 0–2 PHOTOS only. Videos stay for a later question. First tap is the first frame, second tap is the last. Then Skip / None or Next.\n\n1/5 ආරම්භය/අවසානය: පොටෝ 0–2ක් විතරක්. වීඩියෝ ඊළඟ ප්‍රශ්නෙට. Skip / None හෝ Next.";
   }
   if (step === "people") {
-    return "People photos: tap who should appear (up to 10). These are not start/end frames. Then Skip / None, or Next.\n\nඅයගේ පොටෝ: කවුද වීඩියෝවේ ඉන්න ඕනේද tap කරන්න. Frames නෙවෙයි. Skip / None හෝ Next.";
+    return "Question 2/5 — People photos: tap who should appear (up to 10 photos). Not start/end frames. Then Skip / None or Next.\n\n2/5 අයගේ පොටෝ. Frames නෙවෙයි. Skip / None හෝ Next.";
   }
   if (step === "clip") {
-    return "Motion clip: tap one video on the bar, or Skip / None.\n\nචලන වීඩියෝවක් තියෙනවා නම් එකක් tap කරන්න. නැත්නම් Skip / None.";
+    return "Question 3/5 — Motion clip: tap ONE video on the bar, or Skip / None. I will still ask for sound and size.\n\n3/5 වීඩියෝවක් එකක් tap කරන්න. නැත්නම් Skip / None.";
   }
   if (step === "audio") {
-    return "Sound: tap one audio file on the bar, or Skip / None.\n\nසින්දුවක් හෝ හඬක් තියෙනවා නම් tap කරන්න. නැත්නම් Skip / None.";
+    return "Question 4/5 — Sound: tap one audio file on the bar, or Skip / None. Size is next.\n\n4/5 සින්දුවක් හෝ හඬක් තියෙනවා නම් tap කරන්න. නැත්නම් Skip / None.";
+  }
+  if (step === "size") {
+    return "Question 5/5 — Video size: tap landscape or vertical, and 480p / 720p / 1080p. Skip / None keeps 480p landscape unless you said Instagram or vertical.\n\n5/5 වීඩියෝ එකේ size: landscape හෝ vertical, 480p/720p/1080p. Skip / None = 480p landscape.";
   }
   return "";
 }
@@ -1227,6 +1284,7 @@ export function quizStepLimit(step: AttachQuizStep) {
   if (step === "frames") return 2;
   if (step === "people") return VIDEO_REF_LIMIT;
   if (step === "clip" || step === "audio") return 1;
+  if (step === "size") return 1;
   return VIDEO_REF_LIMIT;
 }
 
@@ -1235,7 +1293,7 @@ export function quizAccepts(step: AttachQuizStep, item: LocalImage) {
   if (step === "frames" || step === "people") return kind === "image";
   if (step === "clip") return kind === "video";
   if (step === "audio") return kind === "audio";
-  return true;
+  return false;
 }
 
 function clipSource(item: LocalImage | null | undefined) {
@@ -1257,6 +1315,9 @@ export function beginAttachQuiz(memory: AgentMemory, attached: LocalImage[]): { 
     wanClip: null,
     wanAudio: null,
     wanDroppedClipAudio: false,
+    wanSizeId: "",
+    wanAspect: "16:9",
+    wanResolution: "480p",
     chosenRefs: [],
     userRefs: attached.length ? attached : memory.userRefs,
     images: attached.length ? attached.filter((img) => mediaKindOf(img) === "image") : memory.images,
@@ -1291,6 +1352,7 @@ export function finishAttachQuiz(memory: AgentMemory): AgentMemory {
     const end = clipEndImage(memory);
     if (end) frames = [end];
   }
+  const size = videoSizeFromMemory(memory, brief);
   return {
     ...memory,
     attachQuiz: "",
@@ -1302,6 +1364,9 @@ export function finishAttachQuiz(memory: AgentMemory): AgentMemory {
     wanClip: clip,
     wanAudio: audio,
     wanDroppedClipAudio: dropped,
+    wanSizeId: size.id,
+    wanAspect: size.aspect,
+    wanResolution: size.resolution,
     chosenRefs: [...frames, ...people],
     personIds: [...new Set([...memory.personIds, ...named.map((person) => person.id)])],
   };
@@ -1314,10 +1379,6 @@ export function advanceAttachQuiz(memory: AgentMemory): { memory: AgentMemory; d
     return { memory: next, done: false, question: attachQuizQuestion("people"), dropped: false };
   }
   if (saved.attachQuiz === "people") {
-    if (saved.wanFrames.length) {
-      const finished = finishAttachQuiz(saved);
-      return { memory: finished, done: true, question: "", dropped: finished.wanDroppedClipAudio };
-    }
     const next: AgentMemory = { ...saved, attachQuiz: "clip", chosenRefs: [] };
     return { memory: next, done: false, question: attachQuizQuestion("clip"), dropped: false };
   }
@@ -1325,11 +1386,16 @@ export function advanceAttachQuiz(memory: AgentMemory): { memory: AgentMemory; d
     const next: AgentMemory = { ...saved, attachQuiz: "audio", chosenRefs: [] };
     return { memory: next, done: false, question: attachQuizQuestion("audio"), dropped: false };
   }
+  if (saved.attachQuiz === "audio") {
+    const next: AgentMemory = { ...saved, attachQuiz: "size", chosenRefs: [] };
+    return { memory: next, done: false, question: attachQuizQuestion("size"), dropped: false };
+  }
   const finished = finishAttachQuiz(saved);
   return { memory: finished, done: true, question: "", dropped: finished.wanDroppedClipAudio };
 }
 
 export function quizButtonLabel(memory: AgentMemory) {
+  if (memory.attachQuiz === "size") return memory.wanSizeId ? "Next" : "Skip / None";
   return memory.chosenRefs.length ? "Next" : "Skip / None";
 }
 
@@ -1595,6 +1661,7 @@ function pickRefSource(
 }
 
 function quizShotFields(memory: AgentMemory, kind: AgentShotKind, movieFollow: boolean) {
+  const size = videoSizeFromMemory(memory);
   if (kind !== "video" || !memory.wanQuizDone) {
     return {
       wanFrameIds: [] as string[],
@@ -1602,6 +1669,8 @@ function quizShotFields(memory: AgentMemory, kind: AgentShotKind, movieFollow: b
       wanClipId: "",
       wanAudioId: "",
       useLastFrame: kind === "video" && movieFollow,
+      aspect: (kind === "video" ? size.aspect : "3:4") as Aspect,
+      resolution: kind === "video" ? size.resolution : ("480p" as const),
     };
   }
   const frames = memory.wanFrames.filter(isStillImage);
@@ -1612,6 +1681,8 @@ function quizShotFields(memory: AgentMemory, kind: AgentShotKind, movieFollow: b
     wanClipId: memory.wanClip?.id || "",
     wanAudioId: memory.wanAudio?.id || "",
     useLastFrame: follow,
+    aspect: size.aspect,
+    resolution: size.resolution,
   };
 }
 
@@ -1682,6 +1753,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
             : "No people / reference images.",
           memory.wanClip ? "Video 1 is attached (unseen)." : "No reference video.",
           memory.wanAudio ? "Audio 1 is attached (unheard)." : "No reference audio.",
+          `Output size is ${videoSizeFromMemory(memory, brief).label} (${videoSizeFromMemory(memory, brief).aspect} ${videoSizeFromMemory(memory, brief).resolution}).`,
           "Do not move photos between frames and people. Do not add other stills to Wan.",
         ].join(" ")
       : picked
@@ -1752,7 +1824,6 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
         ? tagged
         : isVideoTab(asked) ? asked : defaultVideoModel();
     const wanted = kind === "video" ? askedSeconds(brief) || 10 : 0;
-    const resolution = kind === "video" ? clipVideoResolution() : "480p";
     const rowRefs = String(row.refs || "").toLowerCase();
     const shotRefs = memory.hasPickedVideoRefs
       ? "user"
@@ -1780,7 +1851,6 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
         brief
       ),
       duration: kind === "video" ? clipVideoDuration(model as VideoTabId, wanted) : 0,
-      resolution,
       model,
       refSource: poseJob ? "user" as const : shotRefs,
       frameStillIds: [] as string[],
@@ -1811,6 +1881,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
           identityRefIds: libraryIds(library, split.identity),
           poseRefIds: libraryIds(library, [poseNum]),
           poseFromSecond: true,
+          aspect: "3:4",
         })
       );
       shots.push(...extras);
@@ -1832,7 +1903,6 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
         title: kind === "video" ? "Video" : poses.length > 1 ? `Still · pose ${poseNum}` : "Still",
         prompt: keepSinhalaDialog(poseJob ? applyPoseIdentityLock(brief, identity.length) : brief, brief),
         duration,
-        resolution: "480p" as const,
         model,
         refSource: poseJob ? "user" as const : refSource,
         frameStillIds: [] as string[],
@@ -2104,6 +2174,7 @@ async function paintPeopleOnFrame(
   people: LocalImage[],
   frame: LocalImage,
   action: string,
+  aspect: Aspect,
   onProgress?: (n: number) => void
 ): Promise<LocalImage> {
   const still = await generateImage(
@@ -2118,7 +2189,7 @@ async function paintPeopleOnFrame(
         `Same faces as those photos and as anyone already in the last image. Do not invent a new person.`,
         `Ignore any bedroom, bed, wall, or indoor light in the earlier images. Those rooms must not appear.`,
       ].join(" "),
-      aspect: "16:9" as Aspect,
+      aspect,
       quality: "high",
       enhancePrompt: false,
       safety: false,
@@ -2144,7 +2215,7 @@ async function firstFrameForVideo(
       ...emptyTabState("image"),
       images: [...packs, end].slice(0, 3),
       prompt: identityOnScenePrompt(memory, shot.prompt || memory.brief),
-      aspect: "16:9" as Aspect,
+      aspect: (shot.aspect || "16:9") as Aspect,
       quality: "high",
       enhancePrompt: false,
       safety: false,
@@ -2168,6 +2239,10 @@ export async function runAgentShot(
   const quizPeople = imagesFromIds(memory, shot.wanPeopleIds).filter(isStillImage);
   const quizClip = shot.wanClipId ? imagesFromIds(memory, [shot.wanClipId])[0] || memory.wanClip : memory.wanClip;
   const quizAudio = shot.wanAudioId ? imagesFromIds(memory, [shot.wanAudioId])[0] || memory.wanAudio : memory.wanAudio;
+  const size = {
+    aspect: (shot.aspect || memory.wanAspect || "16:9") as Aspect,
+    resolution: (shot.resolution || memory.wanResolution || "480p") as VideoResolution,
+  };
   const follow = shot.kind === "video" && shot.useLastFrame && Boolean(clipEndImage(memory));
   let wanFrames: LocalImage[] = [];
   let wanVideos: string[] = [];
@@ -2180,7 +2255,7 @@ export async function runAgentShot(
       refImages = wanFrames;
     } else if (quizFrames.length) {
       wanFrames = quizPeople.length
-        ? await Promise.all(quizFrames.slice(0, 2).map((frame) => paintPeopleOnFrame(quizPeople, frame, prompt, onProgress)))
+        ? await Promise.all(quizFrames.slice(0, 2).map((frame) => paintPeopleOnFrame(quizPeople, frame, prompt, size.aspect, onProgress)))
         : quizFrames.slice(0, 2);
       refImages = wanFrames;
     } else {
@@ -2198,13 +2273,13 @@ export async function runAgentShot(
     wanVideos: wanVideos.length ? wanVideos : undefined,
     wanAudios: wanAudios.length ? wanAudios : undefined,
     prompt,
-    aspect: (shot.kind === "video" ? "16:9" : "3:4") as Aspect,
-    quality: "high",
-    duration: shot.duration || 10,
-    enhancePrompt: false,
-    safety: false,
-    audio: true,
-    resolution: "480p",
+      aspect: shot.kind === "video" ? size.aspect : "3:4",
+      quality: "high",
+      duration: shot.duration || 10,
+      enhancePrompt: false,
+      safety: false,
+      audio: true,
+      resolution: shot.kind === "video" ? size.resolution : "480p",
   };
 
   const result =
@@ -2244,7 +2319,7 @@ export function describePlan(_lock: AgentLock, shots: AgentShot[]) {
     const extra =
       shot.kind === "video"
         ? [
-            `${shot.duration}s 480p`,
+            `${shot.duration}s ${shot.resolution} ${shot.aspect || "16:9"}`,
             shot.useLastFrame ? "last frame" : shot.wanFrameIds.length > 1 ? "first + last frame" : shot.wanFrameIds.length ? "first frame" : "",
             shot.wanPeopleIds.length ? `${shot.wanPeopleIds.length} people photo${shot.wanPeopleIds.length === 1 ? "" : "s"}` : "",
             shot.wanClipId && !shot.useLastFrame && !shot.wanFrameIds.length ? "ref clip" : "",

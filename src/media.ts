@@ -67,6 +67,66 @@ export function isUsableReferenceImage(value: string) {
   return /^https?:\/\//i.test(value) && !/localhost|_capacitor_file_|_capacitor_content_/i.test(value);
 }
 
+export function isImagePreview(value: string) {
+  return /^data:image\//i.test(value || "");
+}
+
+export async function videoPosterDataUri(source: string): Promise<string> {
+  if (!source) return "";
+  if (isImagePreview(source)) return source;
+  return new Promise((resolve) => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    if (/^https?:\/\//i.test(source) && !/_capacitor_/i.test(source)) video.crossOrigin = "anonymous";
+    let settled = false;
+    const finish = (uri: string) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      video.removeAttribute("src");
+      video.load();
+      resolve(uri);
+    };
+    const timer = window.setTimeout(() => finish(""), 8000);
+    const snap = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        const width = video.videoWidth || 0;
+        const height = video.videoHeight || 0;
+        if (!width || !height) {
+          finish("");
+          return;
+        }
+        const scale = Math.min(1, 480 / Math.max(width, height));
+        canvas.width = Math.max(1, Math.round(width * scale));
+        canvas.height = Math.max(1, Math.round(height * scale));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          finish("");
+          return;
+        }
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        finish(canvas.toDataURL("image/jpeg", 0.72));
+      } catch {
+        finish("");
+      }
+    };
+    video.onerror = () => finish("");
+    video.onloadeddata = () => {
+      try {
+        const duration = video.duration || 1;
+        video.currentTime = Math.min(0.2, Math.max(0, duration * 0.05));
+      } catch {
+        snap();
+      }
+    };
+    video.onseeked = () => snap();
+    video.src = source;
+  });
+}
+
 export function isUsableMediaUrl(value: string) {
   if (!value) return false;
   if (/^data:(image|video|audio)\//i.test(value)) {

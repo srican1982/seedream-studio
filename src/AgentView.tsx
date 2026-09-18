@@ -42,6 +42,9 @@ import {
   saveAgentMemory,
   startNewAgentChat,
   videoRefQuestion,
+  WAN_SIZE_OPTIONS,
+  pickWanSize,
+  parseWanSizeText,
   type AgentChatInfo,
   type AgentMemory,
   type AgentMessage,
@@ -50,7 +53,7 @@ import {
 } from "./agent";
 import { downloadResult } from "./api";
 import { withKeepAlive } from "./keep-alive";
-import { fileToDataUri, isAudioFile, isImageFile, isVideoFile, uuid } from "./media";
+import { fileToDataUri, isAudioFile, isImageFile, isImagePreview, isVideoFile, uuid, videoPosterDataUri } from "./media";
 import { forgetPerson, getPeople, loadPeople, peopleNames, savePerson } from "./people-store";
 import { isNativeApp } from "./native";
 import type { LocalImage, ResultKind, StudioResult } from "./types";
@@ -62,8 +65,26 @@ type MediaViewer = { kind: ResultKind | "audio"; url: string; alt: string };
 
 function MediaThumb({ item }: { item: LocalImage }) {
   const kind = mediaKindOf(item);
-  if (kind === "video") return <video src={item.preview || item.dataUri} muted playsInline preload="metadata" />;
-  if (kind === "audio") return <span className="photo-bar-audio">Audio</span>;
+  const [poster, setPoster] = useState(() => (kind === "video" && isImagePreview(item.preview) ? item.preview : ""));
+  useEffect(() => {
+    if (kind !== "video") return;
+    if (isImagePreview(item.preview)) {
+      setPoster(item.preview);
+      return;
+    }
+    let alive = true;
+    void videoPosterDataUri(item.preview || item.dataUri).then((uri) => {
+      if (alive && uri) setPoster(uri);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [item.dataUri, item.preview, kind]);
+  if (kind === "video") {
+    if (poster) return <img src={poster} alt="" />;
+    return <video src={item.dataUri || item.preview} muted playsInline preload="metadata" />;
+  }
+  if (kind === "audio") return <span className="photo-bar-audio">{item.name || "Audio"}</span>;
   return <img src={item.preview || item.dataUri} alt="" />;
 }
 
@@ -225,10 +246,16 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       const kind = isVideoFile(file) ? "video" : isAudioFile(file) ? "audio" : isImageFile(file) ? "image" : null;
       if (!kind) continue;
       const dataUri = await fileToDataUri(file);
+      let preview = kind === "audio" ? "" : dataUri;
+      if (kind === "video") {
+        const objectUrl = URL.createObjectURL(file);
+        preview = (await videoPosterDataUri(objectUrl)) || dataUri;
+        URL.revokeObjectURL(objectUrl);
+      }
       extra.push({
         id: uuid(),
         name: file.name || kind,
-        preview: kind === "audio" ? "" : dataUri,
+        preview,
         dataUri,
         mediaKind: kind,
         mime: file.type,
@@ -731,6 +758,24 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     }
 
     if (isAttachQuiz(current) && !isRecreate(userMessage.text) && !asRecreate) {
+      if (current.attachQuiz === "size") {
+        const sized = parseWanSizeText(userMessage.text);
+        if (sized) current = pickWanSize(current, sized.id);
+        commit(current);
+        if (sized || isQuizAdvance(userMessage.text) || !userMessage.text.trim()) {
+          await finishQuizStep();
+          return;
+        }
+        commit(
+          pushMessage(current, {
+            id: uuid(),
+            role: "assistant",
+            text: "Tap a size, or Skip / None.",
+            createdAt: Date.now(),
+          })
+        );
+        return;
+      }
       if (isQuizAdvance(userMessage.text) || !userMessage.text.trim()) {
         await finishQuizStep();
         return;
@@ -868,7 +913,9 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         : memory.attachQuiz === "clip"
           ? "Motion clip"
           : memory.attachQuiz === "audio"
-            ? "Sound"
+          ? "Sound"
+          : memory.attachQuiz === "size"
+            ? "Video size"
             : "";
 
   return (
@@ -891,7 +938,9 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
           {recreating
             ? `Change photos · ${memory.chosenRefs.length}/${photoLimit}`
             : quiz
-              ? `${quizTitle} · ${memory.chosenRefs.length}/${photoLimit}`
+              ? memory.attachQuiz === "size"
+                ? "Video size"
+                : `${quizTitle} · ${memory.chosenRefs.length}/${photoLimit}`
               : picking
                 ? `Tap photos in order · ${memory.chosenRefs.length}/${VIDEO_REF_LIMIT}`
                 : library.length
@@ -997,14 +1046,29 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
             <p className="photo-picked-empty">
               {recreating
                 ? "No photos yet. Attach some, or tap Recreate to keep the same pictures."
-                : quiz
-                  ? "Attach files if you want, or tap Skip / None."
-                  : "No photos yet. Attach some, or tap Skip / None."}
+                : memory.attachQuiz === "size"
+                  ? "Tap a size below, or Skip / None."
+                  : quiz
+                    ? "Attach files if you want, or tap Skip / None."
+                    : "No photos yet. Attach some, or tap Skip / None."}
             </p>
           )}
           {picking ? (
             <div className="photo-picked">
-              {memory.chosenRefs.length ? (
+              {memory.attachQuiz === "size" ? (
+                <div className="size-picks">
+                  {WAN_SIZE_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      className={memory.wanSizeId === opt.id ? "on" : ""}
+                      onClick={() => commit(pickWanSize(memoryRef.current, opt.id))}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              ) : memory.chosenRefs.length ? (
                 memory.chosenRefs.map((img, index) => (
                   <span key={img.id} className="photo-picked-thumb">
                     <MediaThumb item={img} />
@@ -1033,7 +1097,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime at 480p. Type Wan 3.0 if you want the slower model. After a video I’ll ask start/end frames, people, a clip, then a sound — Skip / None is fine on each.</p>
+            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. Type Wan 3.0 if you want the slower model. After a video I’ll ask frames, people, a clip, sound, then size — Skip / None is fine on each.</p>
           </div>
         ) : (
           memory.messages.map((message) => (
