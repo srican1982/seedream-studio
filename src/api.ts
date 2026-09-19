@@ -21,24 +21,14 @@ const OPENROUTER = "https://openrouter.ai/api/v1/chat/completions";
 const KEY_STORAGE = "runware_api_key";
 const OPENROUTER_KEY_STORAGE = "openrouter_api_key";
 export const BRAIN_MODELS = [
-  { id: "google/gemini-3-flash-preview", label: "Gemini 3 Flash" },
-  { id: "google/gemini-3.8-flash", label: "Gemini 3.8 Flash" },
-  { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  { id: "deepseek/deepseek-v4.1-flash", label: "DeepSeek V4.1 Flash" },
   { id: "x-ai/grok-4.6", label: "Grok 4.6" },
 ] as const;
 
 export type BrainModelId = (typeof BRAIN_MODELS)[number]["id"];
-export const DEFAULT_BRAIN: BrainModelId = "google/gemini-3-flash-preview";
+export const DEFAULT_BRAIN: BrainModelId = "deepseek/deepseek-v4.1-flash";
 const BRAIN_STORAGE = "seedream_agent_brain";
 const TTL = 60;
-
-const GEMINI_SAFETY = [
-  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
-  { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" },
-];
 
 export function loadBrainModel(): BrainModelId {
   const stored = (typeof localStorage !== "undefined" && localStorage.getItem(BRAIN_STORAGE)) || "";
@@ -50,19 +40,13 @@ export function saveBrainModel(id: BrainModelId) {
 }
 
 export function brainFromText(text: string): BrainModelId | null {
+  if (/\b(deepseek|venice)\b/i.test(text)) return "deepseek/deepseek-v4.1-flash";
   if (/\bgrok\b/i.test(text)) return "x-ai/grok-4.6";
-  if (/gemini\s*2\.5\s*pro/i.test(text)) return "google/gemini-2.5-pro";
-  if (/gemini\s*3\.8/i.test(text)) return "google/gemini-3.8-flash";
-  if (/gemini\s*3(\.0)?(\s*flash)?/i.test(text)) return "google/gemini-3-flash-preview";
   return null;
 }
 
-function isGemini(model: string) {
-  return model.startsWith("google/");
-}
-
 function providerFor(model: string) {
-  if (isGemini(model)) return { data_collection: "deny" as const, zdr: true };
+  if (model.startsWith("deepseek/")) return { order: ["venice"], allow_fallbacks: false };
   return { order: ["xai", "x-ai"], allow_fallbacks: false, data_collection: "deny" as const, zdr: true };
 }
 
@@ -518,23 +502,14 @@ function grokErrorMessage(payload: Record<string, unknown>, fallback: string) {
 }
 
 function enhanceBody(messages: ChatMessage[], maxTokens: number, model: string, temperature = 0.7) {
-  const thinking = isGemini(model) ? Math.min(1536, Math.max(512, Math.floor(maxTokens * 0.3))) : 0;
-  const body: Record<string, unknown> = {
+  return {
     model,
     messages,
     stream: false,
     temperature,
-    max_tokens: maxTokens + thinking,
+    max_tokens: maxTokens,
     provider: providerFor(model),
   };
-  if (isGemini(model)) {
-    body.safety_settings = GEMINI_SAFETY;
-    body.reasoning = {
-      max_tokens: thinking,
-      exclude: true,
-    };
-  }
-  return body;
 }
 
 function openRouterHeaders(key: string) {
