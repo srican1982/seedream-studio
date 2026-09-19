@@ -30,6 +30,14 @@ export const DEFAULT_BRAIN: BrainModelId = "deepseek/deepseek-v4.1-flash";
 const BRAIN_STORAGE = "seedream_agent_brain";
 const TTL = 60;
 
+const GEMINI_SAFETY = [
+  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" },
+];
+
 export function loadBrainModel(): BrainModelId {
   const stored = (typeof localStorage !== "undefined" && localStorage.getItem(BRAIN_STORAGE)) || "";
   return BRAIN_MODELS.some((item) => item.id === stored) ? (stored as BrainModelId) : DEFAULT_BRAIN;
@@ -45,8 +53,13 @@ export function brainFromText(text: string): BrainModelId | null {
   return null;
 }
 
+function isGemini(model: string) {
+  return model.startsWith("google/");
+}
+
 function providerFor(model: string) {
   if (model.startsWith("deepseek/")) return { order: ["venice"], allow_fallbacks: false };
+  if (isGemini(model)) return { data_collection: "deny" as const, zdr: true };
   return { order: ["xai", "x-ai"], allow_fallbacks: false, data_collection: "deny" as const, zdr: true };
 }
 
@@ -502,14 +515,23 @@ function grokErrorMessage(payload: Record<string, unknown>, fallback: string) {
 }
 
 function enhanceBody(messages: ChatMessage[], maxTokens: number, model: string, temperature = 0.7) {
-  return {
+  const thinking = isGemini(model) ? Math.min(1536, Math.max(512, Math.floor(maxTokens * 0.3))) : 0;
+  const body: Record<string, unknown> = {
     model,
     messages,
     stream: false,
     temperature,
-    max_tokens: maxTokens,
+    max_tokens: maxTokens + thinking,
     provider: providerFor(model),
   };
+  if (isGemini(model)) {
+    body.safety_settings = GEMINI_SAFETY;
+    body.reasoning = {
+      max_tokens: thinking,
+      exclude: true,
+    };
+  }
+  return body;
 }
 
 function openRouterHeaders(key: string) {
