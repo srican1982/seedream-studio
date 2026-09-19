@@ -751,21 +751,25 @@ export async function generateVideo(
       .filter(isUsableReferenceImage);
     const refs = images.length ? images : state.images.map((img) => stillSrc(img)).filter(isUsableReferenceImage);
     const fittedFrames = frames.length ? await Promise.all(frames.slice(0, 2).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
-    const videos = fittedFrames.length
-      ? []
-      : await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
-    const audios = fittedFrames.length
-      ? []
-      : await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
+    const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
+    const audios = await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
     if (fittedFrames.length) {
-      task.model = findVideo("wan-3").airId;
-      task.inputs = { frameImages: await Promise.all(fittedFrames.map(uploadRunwareImage)) };
+      const frameIds = await Promise.all(fittedFrames.map((image) => uploadRunwareImage(image)));
+      const inputs: Record<string, unknown> = {
+        frameImages: frameIds.map((image, index) => ({
+          image,
+          frame: fittedFrames.length === 1 || index === 0 ? "first" : "last",
+        })),
+      };
+      if (videos.length) inputs.referenceVideos = videos;
+      if (audios.length) inputs.referenceAudios = audios;
+      task.inputs = inputs;
       task.resolution = resolution;
-      task.positivePrompt = scrubWanPrompt(state.prompt.trim(), { frames: true });
-      task.numberResults = 1;
-      task.outputQuality = 95;
-      task.includeCost = false;
-      delete task.ttl;
+      task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), {
+        frames: true,
+        video: Boolean(videos.length),
+        audio: Boolean(audios.length),
+      });
     } else {
       const fittedRefs = refs.length ? await Promise.all(refs.slice(0, 10).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
       const inputs: Record<string, unknown> = {};
@@ -784,12 +788,12 @@ export async function generateVideo(
         task.width = size.width;
         task.height = size.height;
       }
-      task.safety = { checkContent: state.safety, mode: "fast" };
-      task.settings = {
-        promptExtend: false,
-        audio: state.audio,
-      };
     }
+    task.safety = { checkContent: state.safety, mode: "fast" };
+    task.settings = {
+      promptExtend: false,
+      audio: state.audio,
+    };
   } else {
     task.resolution = resolution;
     if (images.length) task.inputs = { frameImages: images };
@@ -801,9 +805,8 @@ export async function generateVideo(
     }
   }
 
-  const resultTab = String(task.model) === findVideo("wan-3").airId ? "wan-3" : tab;
   return withKeepAlive("Generating a video… You can switch apps.", async () =>
-    toStudioResult("video", resultTab, state, await runTask(task, onProgress))
+    toStudioResult("video", tab, state, await runTask(task, onProgress))
   );
 }
 
