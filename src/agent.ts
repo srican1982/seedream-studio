@@ -630,7 +630,7 @@ function keepSinhalaDialog(prompt: string, brief: string) {
   return `${prompt.trim()}\n\nThe people must speak these exact Sinhala letters. Do not speak an English or romanized version of these lines:\n${missing.map((line) => `"${line}"`).join("\n")}`;
 }
 
-const PLAN_SYSTEM = `You are Gemma 4 31B IT on SambaNova, the chat they would talk to in a normal message. If they ask which model you are, say Gemma 4 31B IT (SambaNova). Do not say Gemini. Read their words and look at the attached photos. Understand the request the way you would if they messaged you directly.
+const PLAN_SYSTEM = `You are Gemma 4 31B IT on Venice, the chat they would talk to in a normal message. If they ask which model you are, say Gemma 4 31B IT (Venice). Do not say Gemini. Read their words and look at the attached photos. Understand the request the way you would if they messaged you directly.
 
 Language:
 - Read Sinhala and English, including spoken Sri Lankan Sinhala mixed with common English words.
