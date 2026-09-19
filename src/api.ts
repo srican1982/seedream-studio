@@ -21,14 +21,12 @@ const OPENROUTER = "https://openrouter.ai/api/v1/chat/completions";
 const KEY_STORAGE = "runware_api_key";
 const OPENROUTER_KEY_STORAGE = "openrouter_api_key";
 export const BRAIN_MODELS = [
-  { id: "google/gemini-3-flash-preview", label: "Gemini 3 Flash" },
-  { id: "google/gemini-3.8-flash", label: "Gemini 3.8 Flash" },
-  { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  { id: "google/gemma-4-31b-it", label: "Gemma 4 31B" },
   { id: "x-ai/grok-4.6", label: "Grok 4.6" },
 ] as const;
 
 export type BrainModelId = (typeof BRAIN_MODELS)[number]["id"];
-export const DEFAULT_BRAIN: BrainModelId = "google/gemini-3-flash-preview";
+export const DEFAULT_BRAIN: BrainModelId = "google/gemma-4-31b-it";
 const BRAIN_STORAGE = "seedream_agent_brain";
 const TTL = 60;
 
@@ -50,18 +48,17 @@ export function saveBrainModel(id: BrainModelId) {
 }
 
 export function brainFromText(text: string): BrainModelId | null {
+  if (/\b(gemma|sambanova)\b/i.test(text)) return "google/gemma-4-31b-it";
   if (/\bgrok\b/i.test(text)) return "x-ai/grok-4.6";
-  if (/gemini\s*2\.5\s*pro/i.test(text)) return "google/gemini-2.5-pro";
-  if (/gemini\s*3\.8/i.test(text)) return "google/gemini-3.8-flash";
-  if (/gemini\s*3(\.0)?(\s*flash)?/i.test(text)) return "google/gemini-3-flash-preview";
   return null;
 }
 
 function isGemini(model: string) {
-  return model.startsWith("google/");
+  return model.startsWith("google/gemini");
 }
 
 function providerFor(model: string) {
+  if (model.startsWith("google/gemma")) return { only: ["sambanova"], allow_fallbacks: false };
   if (isGemini(model)) return { data_collection: "deny" as const, zdr: true };
   return { order: ["xai", "x-ai"], allow_fallbacks: false, data_collection: "deny" as const, zdr: true };
 }
