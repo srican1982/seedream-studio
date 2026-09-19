@@ -630,7 +630,7 @@ function keepSinhalaDialog(prompt: string, brief: string) {
   return `${prompt.trim()}\n\nThe people must speak these exact Sinhala letters. Do not speak an English or romanized version of these lines:\n${missing.map((line) => `"${line}"`).join("\n")}`;
 }
 
-const PLAN_SYSTEM = `You are the same Gemini the user would talk to in a normal chat. Read their words and look at the attached photos. Understand the request the way you would if they messaged you directly.
+const PLAN_SYSTEM = `You are Gemma 4 31B IT on SambaNova, the chat they would talk to in a normal message. If they ask which model you are, say Gemma 4 31B IT (SambaNova). Do not say Gemini. Read their words and look at the attached photos. Understand the request the way you would if they messaged you directly.
 
 Language:
 - Read Sinhala and English, including spoken Sri Lankan Sinhala mixed with common English words.
@@ -645,7 +645,7 @@ Adult content:
 Then write the exact prompt that will be sent to Qwen 3.0 Pro (images) or Wan (video). That prompt is the whole job. Qwen and Wan will not see this chat — they only get your written prompt plus the reference pixels. You must turn what you understood from the words and the photos into better generator language.
 
 How to write shot.prompt:
-- First understand them the way you would in a normal Gemini chat: slang, Sinhala, shorthand, sex-position names, and what they mean by the attached photos.
+- First understand them the way you would in a normal chat: slang, Sinhala, shorthand, sex-position names, and what they mean by the attached photos.
 - Write the picture and motion in clear, explicit English so Qwen or Wan understand bodies, camera, and action. If they name a position, act, or pose, describe the bodies: who is where, limbs, facing, contact, and the action. Qwen and Wan often do not know the name. You do. Write the picture.
 - Sinhala, Singlish, and English in the chat are DIRECTIONS to you, not lines for the characters. Translate the scene into English for Qwen/Wan. Do not have anyone speak the user's instructions.
 - Spoken words only if they clearly asked to say/speak them ("say", "speak", "dialogue", "කියන්න", or quoted lines meant to be said). Then copy those exact words. Sinhala spoken words stay in Sinhala letters. Do not romanize them.
@@ -673,7 +673,7 @@ How to write shot.prompt:
   - attached = photos they just added with this message (or "use what I am attaching")
   - created = stills this chat already made ("use the one you created", "the pictures you made")
   - both = new uploads AND created stills ("use the picture you created and what I am attaching")
-- If they already finished the attach quiz, refs is attached and Gemini does not choose frames vs people.
+- If they already finished the attach quiz, refs is attached and you do not choose frames vs people.
 - If they already picked photos in tap order for a still, refs is attached and those are the only photos.
 - If they attached new photos and did not mention the created stills, refs is attached.
 - If they attached no new photos and asked for a video, refs is created — unless they already picked photos.
@@ -1436,7 +1436,7 @@ async function toGeminiJpegBase64(source: string): Promise<string | null> {
 async function labeledStill(label: string, img: LocalImage, required = false): Promise<ChatContentPart[]> {
   const url = await toGeminiJpegBase64(img.dataUri || img.preview);
   if (!url) {
-    if (required) throw new Error("Could not encode the photos as JPEG Base64 for Gemini. Attach them again.");
+    if (required) throw new Error("Could not encode the photos as JPEG Base64 for the planner. Attach them again.");
     return [{ type: "text", text: `${label} (the file could not be attached as a picture).` }];
   }
   return [
@@ -1759,7 +1759,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
       : library.filter((photo) => photo.mediaKind === "image").length;
   const gotPixels = uploadedParts.filter((part) => part.type === "image_url").length;
   if (needPixels && gotPixels < (quiz ? needPixels : 1)) {
-    throw new Error("Could not encode the photos as JPEG Base64 for Gemini. Attach them again.");
+    throw new Error("Could not encode the photos as JPEG Base64 for the planner. Attach them again.");
   }
   const text = [
     quiz
