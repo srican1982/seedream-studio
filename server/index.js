@@ -60,7 +60,7 @@ app.post("/api/enhance", async (req, res) => {
         "X-Title": "Seedream Agent",
       },
       body: JSON.stringify({
-        model: body.model || "google/gemma-4-31b-it",
+        model: body.model || "google/gemini-3-flash-preview",
         messages: body.messages,
         stream: false,
         temperature: typeof body.temperature === "number" ? body.temperature : 0.7,
