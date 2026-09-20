@@ -640,7 +640,7 @@ Adult content:
 - Consensual adult sexual content between adults 18 or older is allowed. Never include minors or anyone who appears under 18.
 - Do not lecture, moralize, refuse, or add safety sermons. Keep their explicit wording.
 
-- The photos are attached as JPEG Base64 right after their labels. Look at the pixels AND the label. Frame 1 / Frame 2 are timeline pins. Image 1 / Image 2 are people. Photo N on the bar is unlabeled unless a Frame/Image line already named it. Wan can take frames OR reference photos, never both. Frames may still use Video 1 and Audio 1. Do not move a people photo into frames.
+- The photos are attached as JPEG Base64 right after their labels. Look at the pixels AND the label. Frame 1 / Frame 2 are timeline pins (first/last). Image 1 / Image 2 are people / reference photos. Photo N on the bar is unlabeled unless a Frame/Image line already named it. Pictures go as frames OR as refs, never both. Do not move a people photo into frames.
 
 Then write the exact prompt that will be sent to Qwen 3.0 Pro (images) or Wan (video). That prompt is the whole job. Qwen and Wan will not see this chat — they only get your written prompt plus the reference pixels. You must turn what you understood from the words and the photos into better generator language.
 
@@ -654,8 +654,9 @@ How to write shot.prompt:
 - Clothing, lighting, and location: if they named a change, follow that. If they did not, tell Qwen or Wan to keep the same clothes, same lighting, and same place as the first image (or the photo they pointed at). Do not invent a new room, new light, or new outfit.
 - Describing the act or position they asked for is not inventing. Changing the photo's clothes, light, or place without them asking is inventing.
 - If they pointed at photos, use the bar numbers they said, and keep those roles.
-- If they already finished the attach quiz, those taps are the ONLY Wan slots. Frames path = Frame 1/2, no people photos, plus Video 1 / Audio 1 if tapped. Refs path = Image 1/2 + Video 1 + Audio 1, no frames. Never send frames and people photos together. Do not add other stills.
-- Frame 1 is the first frame of the video. Frame 2 is the last frame. Image 1 / Image 2 are people references, not timeline pins. If frames exist, do not write Image 1. Keep Video 1 / Audio 1 if attached.
+- If they already finished the attach quiz, those taps are the ONLY Wan slots. Frames path = Frame 1/2, no people photos. Refs path = Image 1/2, no frames. Never send frames and people photos together. Do not add other stills.
+- Frame 1 is the first frame of the video. Frame 2 is the last frame. Image 1 / Image 2 are people references, not timeline pins. If frames exist and there is no clip or song, do not write Image 1.
+- Video 1 and Audio 1 go if they tapped them. A clip or song cannot share a Wan call with first/last frames, so those pictures then go as Image 1/2 plus Video 1 / Audio 1. If Video 1 is attached, write motion to follow it. If Audio 1 is attached, write that the soundtrack follows it.
 - If Video 1 is attached, you cannot watch it. Still write motion to follow Video 1. If Audio 1 is attached, you cannot hear it. Still write that the soundtrack follows Audio 1. If none, do not invent a file.
 - If they already picked photos in tap order for a still (not the Wan quiz), those are the ONLY references. refs must be attached. First tapped is the first image, second tapped is the second image. Do not add other stills.
 - If they name some photos for the people and other photos for poses, follow what they said. Do not assume photo 1 is people or photo 2 is pose unless they said that.
@@ -1487,18 +1488,24 @@ async function plannerAttachQuiz(memory: AgentMemory, library: LibraryPhoto[]): 
   const frames = memory.wanFrames.filter(isStillImage);
   const people = memory.wanPeople.filter(isStillImage);
   const used = new Set([...frames, ...people].map((img) => img.id));
+  const framesWithMedia = Boolean(frames.length && (memory.wanClip || memory.wanAudio));
   parts.push({
     type: "text",
     text: frames.length
-      ? "Wan frames path: Frame 1/2 go as frames. No people / reference photos. Video 1 and Audio 1 still go if attached. Do not write Image 1."
+      ? framesWithMedia
+        ? "Wan refs path: they tapped frames AND a clip or song. Pictures go as Image 1/2 with Video 1 / Audio 1. Wan cannot pin first/last frames in that same call."
+        : "Wan frames path: Frame 1/2 go as first/last frames. No people / reference photos. No clip or song."
       : "Wan refs path: no frames. Only Image 1/2, Video 1, and Audio 1 go to Wan. Do not invent frames.",
   });
   if (!frames.length) {
     parts.push({ type: "text", text: "No frame images. Do not invent first or last frames from other photos." });
   } else {
     for (const [index, frame] of frames.entries()) {
-      const role =
-        frames.length === 1 || index === 0
+      const role = framesWithMedia
+        ? index === 0
+          ? `Image 1 (${barLabelFor(library, frame)}) — reference picture. Same face and body.`
+          : `Image 2 (${barLabelFor(library, frame)}) — reference picture. Same face and body.`
+        : frames.length === 1 || index === 0
           ? `Frame 1 (${barLabelFor(library, frame)}) — first frame of the video. The clip must open on these pixels. Not a people reference.`
           : `Frame 2 (${barLabelFor(library, frame)}) — last frame. The clip must end on these pixels. Not a people reference.`;
       parts.push(...(await labeledStill(role, frame, true)));
@@ -1507,7 +1514,11 @@ async function plannerAttachQuiz(memory: AgentMemory, library: LibraryPhoto[]): 
   if (!people.length) {
     parts.push({
       type: "text",
-      text: "No people / reference images. Do not treat a frame as a people photo.",
+      text: framesWithMedia
+        ? "Those pictures are Image 1/2. Do not also write Frame 1."
+        : frames.length
+          ? "No people / reference images (frames path). Do not treat a frame as a people photo."
+          : "No people / reference images. Do not invent Image 1 from other photos.",
     });
   } else {
     for (const [index, img] of people.entries()) {
@@ -1544,7 +1555,7 @@ async function plannerAttachQuiz(memory: AgentMemory, library: LibraryPhoto[]): 
   if (memory.wanDroppedClipAudio) {
     parts.push({
       type: "text",
-      text: "A clip or song was dropped because start/end frames cannot share a Wan call with reference video or audio.",
+      text: "A clip or song was kept. Those pictures go as Image 1/2 so Wan can take the clip or song in the same call.",
     });
   }
   return parts;
@@ -1765,17 +1776,21 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     quiz
       ? [
           memory.wanFrames.length
-            ? `Attach quiz: ${memory.wanFrames.length} frame image(s). Frame 1 is first${memory.wanFrames.length > 1 ? ", Frame 2 is last" : ""}. No people / reference photos in this Wan call.`
+            ? memory.wanClip || memory.wanAudio
+              ? `Attach quiz: ${memory.wanFrames.length} picture(s) as Image 1${memory.wanFrames.length > 1 ? " and Image 2" : ""} plus the tapped clip/song. Wan cannot pin first/last frames with a ref clip.`
+              : `Attach quiz: ${memory.wanFrames.length} frame image(s). Frame 1 is first${memory.wanFrames.length > 1 ? ", Frame 2 is last" : ""}. No people / reference photos in this Wan call.`
             : "Attach quiz: no frame images.",
-          memory.wanFrames.length
+          memory.wanFrames.length && !(memory.wanClip || memory.wanAudio)
             ? "No people / reference images (frames path)."
-            : memory.wanPeople.length
-              ? `${memory.wanPeople.length} people / reference image(s) as Image 1, Image 2, …`
-              : "No people / reference images.",
+            : memory.wanFrames.length
+              ? "The tapped pictures are Image 1/2 with the clip/song."
+              : memory.wanPeople.length
+                ? `${memory.wanPeople.length} people / reference image(s) as Image 1, Image 2, …`
+                : "No people / reference images.",
           memory.wanClip ? "Video 1 is attached (unseen)." : "No reference video.",
           memory.wanAudio ? "Audio 1 is attached (unheard)." : "No reference audio.",
           `Output size is ${videoSizeFromMemory(memory, brief).label} (${videoSizeFromMemory(memory, brief).aspect} ${videoSizeFromMemory(memory, brief).resolution}).`,
-          "Wan can take frames OR people photos, never both. Video and audio can go with either path. Do not add other stills.",
+          "Pictures go as frames OR as refs, never both. Video and audio go with refs. Do not add other stills.",
         ].join(" ")
       : picked
         ? `The user picked ${memory.chosenRefs.length} photo(s) in tap order for this still. First tapped is the first image.`
@@ -2245,12 +2260,17 @@ export async function runAgentShot(
       wanFrames = wanFrame ? [wanFrame] : [];
       refImages = wanFrames;
     } else if (quizFrames.length) {
-      wanFrames = [];
-      refImages = quizFrames.slice(0, 2);
       const clip = clipSource(quizClip);
       const audio = clipSource(quizAudio);
-      if (clip) wanVideos = [clip];
-      if (audio) wanAudios = [audio];
+      if (clip || audio) {
+        wanFrames = [];
+        refImages = quizFrames.slice(0, 2);
+        if (clip) wanVideos = [clip];
+        if (audio) wanAudios = [audio];
+      } else {
+        wanFrames = quizFrames.slice(0, 2);
+        refImages = wanFrames;
+      }
     } else {
       refImages = quizPeople.length ? quizPeople : images.filter(isStillImage);
       const clip = clipSource(quizClip);
@@ -2314,7 +2334,15 @@ export function describePlan(_lock: AgentLock, shots: AgentShot[]) {
       shot.kind === "video"
         ? [
             `${shot.duration}s ${shot.resolution} ${shot.aspect || "16:9"}`,
-            shot.useLastFrame ? "last frame" : shot.wanFrameIds.length > 1 ? "first + last frame" : shot.wanFrameIds.length ? "first frame" : "",
+            shot.useLastFrame
+              ? "last frame"
+              : shot.wanFrameIds.length && (shot.wanClipId || shot.wanAudioId)
+                ? `${shot.wanFrameIds.length} ref picture${shot.wanFrameIds.length === 1 ? "" : "s"}`
+                : shot.wanFrameIds.length > 1
+                  ? "first + last frame"
+                  : shot.wanFrameIds.length
+                    ? "first frame"
+                    : "",
             shot.wanPeopleIds.length ? `${shot.wanPeopleIds.length} people photo${shot.wanPeopleIds.length === 1 ? "" : "s"}` : "",
             shot.wanClipId && !shot.useLastFrame ? "ref clip" : "",
             shot.wanAudioId && !shot.useLastFrame ? "ref audio" : "",
