@@ -48,7 +48,7 @@ export function saveBrainModel(id: BrainModelId) {
 }
 
 export function brainFromText(text: string): BrainModelId | null {
-  if (/\b(gemma|venice)\b/i.test(text)) return "google/gemma-4-31b-it";
+  if (/\b(gemma|modelrun)\b/i.test(text)) return "google/gemma-4-31b-it";
   if (/\bgrok\b/i.test(text)) return "x-ai/grok-4.6";
   return null;
 }
@@ -58,7 +58,7 @@ function isGemini(model: string) {
 }
 
 function providerFor(model: string) {
-  if (model.startsWith("google/gemma")) return { only: ["venice/fp4"], allow_fallbacks: false };
+  if (model.startsWith("google/gemma")) return { only: ["modelrun/fp4"], allow_fallbacks: false };
   if (isGemini(model)) return { data_collection: "deny" as const, zdr: true };
   return { order: ["xai", "x-ai"], allow_fallbacks: false, data_collection: "deny" as const, zdr: true };
 }
