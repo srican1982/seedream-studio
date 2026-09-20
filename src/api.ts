@@ -785,17 +785,20 @@ export async function generateVideo(
     if ((state.wanFrames || []).length && !frames.length) {
       throw new Error("Those frame photos could not be read as JPEG or PNG. Attach them again.");
     }
-    const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
-    const audios = await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
-    const pinFrames = Boolean(frames.length && !videos.length && !audios.length);
-    if (pinFrames) {
+    if (frames.length) {
       const hosted = await Promise.all(frames.slice(0, 2).map((image) => prepareWanImage(image, state.aspect)));
-      task.inputs = { frameImages: hosted };
+      task.inputs = {
+        frameImages: hosted.map((image, index) => ({
+          image,
+          frame: hosted.length === 1 || index === 0 ? "first" : "last",
+        })),
+      };
       task.resolution = resolution;
       task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), { frames: true });
     } else {
-      const stills = (frames.length ? frames : refs).slice(0, 10);
-      const hostedRefs = stills.length ? await Promise.all(stills.map((image) => prepareWanImage(image, state.aspect))) : [];
+      const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
+      const audios = await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
+      const hostedRefs = refs.length ? await Promise.all(refs.slice(0, 10).map((image) => prepareWanImage(image, state.aspect))) : [];
       const inputs: Record<string, unknown> = {};
       if (hostedRefs.length) inputs.referenceImages = hostedRefs;
       if (videos.length) inputs.referenceVideos = videos;
