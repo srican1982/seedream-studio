@@ -2245,8 +2245,8 @@ export async function runAgentShot(
       wanFrames = wanFrame ? [wanFrame] : [];
       refImages = wanFrames;
     } else if (quizFrames.length) {
-      wanFrames = quizFrames.slice(0, 2);
-      refImages = wanFrames;
+      wanFrames = [];
+      refImages = quizFrames.slice(0, 2);
       const clip = clipSource(quizClip);
       const audio = clipSource(quizAudio);
       if (clip) wanVideos = [clip];

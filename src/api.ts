@@ -290,23 +290,6 @@ async function uploadRunwareMedia(media: string): Promise<string> {
   throw new Error("Could not upload the file.");
 }
 
-function isRunwareId(value: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
-
-async function prepareWanImage(image: string, aspect: TabState["aspect"]): Promise<string> {
-  const fitted = await fitImageDataUriToAspect(image, aspect);
-  if (/^data:image\/(heic|heif)/i.test(fitted)) {
-    throw new Error("Wan cannot use HEIC photos. Send a JPEG or PNG.");
-  }
-  if (!isUsableReferenceImage(fitted) && !isUsableMediaUrl(fitted) && !isRunwareId(fitted)) {
-    throw new Error("Wan could not read that photo. Use a JPEG or PNG.");
-  }
-  const uploaded = await uploadRunwareImage(fitted);
-  if (isUsableMediaUrl(uploaded) || isRunwareId(uploaded)) return uploaded;
-  throw new Error("Could not upload the photo to Wan.");
-}
-
 async function uploadRunwareImage(image: string): Promise<string> {
   const value = image.trim();
   if (!value) throw new Error("Missing image.");
@@ -769,16 +752,13 @@ export async function generateVideo(
       .map((img) => stillSrc(img))
       .filter(isUsableReferenceImage);
     const refs = images.length ? images : state.images.map((img) => stillSrc(img)).filter(isUsableReferenceImage);
-    const fittedFrames = frames.length ? await Promise.all(frames.slice(0, 2).map((image) => prepareWanImage(image, state.aspect))) : [];
-    const videos = fittedFrames.length
-      ? []
-      : await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
-    const audios = fittedFrames.length
-      ? []
-      : await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
+    const fittedFrames = frames.length ? await Promise.all(frames.slice(0, 2).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
+    const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
+    const audios = await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
     if (fittedFrames.length) {
+      const frameIds = await Promise.all(fittedFrames.map((image) => uploadRunwareImage(image)));
       task.inputs = {
-        frameImages: fittedFrames.map((image, index) => ({
+        frameImages: frameIds.map((image, index) => ({
           image,
           frame: fittedFrames.length === 1 || index === 0 ? "first" : "last",
         })),
@@ -790,7 +770,7 @@ export async function generateVideo(
         audio: Boolean(audios.length),
       });
     } else {
-      const fittedRefs = refs.length ? await Promise.all(refs.slice(0, 10).map((image) => prepareWanImage(image, state.aspect))) : [];
+      const fittedRefs = refs.length ? await Promise.all(refs.slice(0, 10).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
       const inputs: Record<string, unknown> = {};
       if (fittedRefs.length) inputs.referenceImages = fittedRefs;
       if (videos.length) inputs.referenceVideos = videos;
