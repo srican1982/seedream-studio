@@ -833,6 +833,18 @@ code { color: var(--accent-2); }
   font-size: 12px;
   line-height: 1;
 }
+.photo-cancel {
+  flex: 0 0 auto;
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #111218;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 10px 12px;
+  white-space: nowrap;
+}
 .photo-use {
   flex: 0 0 auto;
   margin-left: auto;
@@ -844,6 +856,9 @@ code { color: var(--accent-2); }
   font-weight: 700;
   padding: 10px 12px;
   white-space: nowrap;
+}
+.photo-cancel + .photo-use {
+  margin-left: 0;
 }
 .size-picks {
   display: flex;

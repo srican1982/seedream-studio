@@ -9,12 +9,14 @@ import {
   advanceAttachQuiz,
   beginAttachQuiz,
   beginRecreate,
+  cancelAttachQuiz,
   deleteAgentChat,
   describePlan,
   emptyAgentMemory,
   isAttachQuiz,
   isContinue,
   isQuizAdvance,
+  isQuizCancel,
   continueStatus,
   isRecreate,
   isForgetPerson,
@@ -60,7 +62,7 @@ import type { LocalImage, ResultKind, StudioResult } from "./types";
 
 const COMPOSER_MIN = 40;
 const COMPOSER_MAX = 200;
-const ATTACH_LIMIT = 16;
+const ATTACH_LIMIT = 20;
 const IMAGE_BYTES_MAX = 35_000_000;
 const MEDIA_BYTES_MAX = 120_000_000;
 
@@ -361,6 +363,19 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
 
   function askAttachQuiz(current: AgentMemory, attached: LocalImage[]) {
     const started = beginAttachQuiz(current, attached);
+    commit(
+      pushMessage(started.memory, {
+        id: uuid(),
+        role: "assistant",
+        text: started.question,
+        createdAt: Date.now(),
+      })
+    );
+  }
+
+  function cancelQuiz() {
+    if (busy || !isAttachQuiz(memoryRef.current)) return;
+    const started = cancelAttachQuiz(memoryRef.current);
     commit(
       pushMessage(started.memory, {
         id: uuid(),
@@ -778,6 +793,10 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     }
 
     if (isAttachQuiz(current) && !isRecreate(userMessage.text) && !asRecreate) {
+      if (isQuizCancel(userMessage.text)) {
+        cancelQuiz();
+        return;
+      }
       if (current.attachQuiz === "size") {
         const sized = parseWanSizeText(userMessage.text);
         if (sized) current = pickWanSize(current, sized.id);
@@ -1070,8 +1089,14 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                   ? "Tap a size below, or Skip / None."
                   : quiz
                     ? memory.attachQuiz === "frames"
-                      ? "Tap 1 photo = first frame, or 2 photos = first then last. That skips ref photos, video, and audio. Or Skip to ref photos."
-                      : "Attach files if you want, or tap Skip / None."
+                      ? "Tap 1 photo = first frame, or 2 photos = first then last. That skips ref photos, video, and audio. Or Skip to ref photos. Cancel starts over."
+                      : memory.attachQuiz === "people"
+                        ? "Tap up to 10 ref photos, or Skip / None. Cancel starts over."
+                        : memory.attachQuiz === "clip"
+                          ? "Tap up to 5 ref videos, or Skip / None. Cancel starts over."
+                          : memory.attachQuiz === "audio"
+                            ? "Tap up to 5 ref audios, or Skip / None. Cancel starts over."
+                            : "Attach files if you want, or tap Skip / None."
                     : "No photos yet. Attach some, or tap Skip / None."}
             </p>
           )}
@@ -1103,6 +1128,11 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
               ) : (
                 <p className="photo-picked-empty">Nothing selected yet</p>
               )}
+              {quiz ? (
+                <button className="photo-cancel" type="button" onClick={() => cancelQuiz()}>
+                  Cancel
+                </button>
+              ) : null}
               <button
                 className="photo-use"
                 type="button"
@@ -1119,7 +1149,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. Frames: 1st photo first frame, 2nd photo last frame. Skip frames to pick ref photos, video, and audio together.</p>
+            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. Frames: 1st photo first frame, 2nd photo last frame (2 max). Skip frames to pick up to 10 ref photos, 5 videos, and 5 audios together. Cancel before generate to start the quiz over.</p>
           </div>
         ) : (
           memory.messages.map((message) => (
