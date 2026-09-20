@@ -169,9 +169,17 @@ export async function fitImageDataUriToAspect(source: string, aspect: Aspect, ma
           sy = Math.round((img.height - sh) / 2);
         }
         const scale = Math.min(1, maxEdge / Math.max(sw, sh));
+        let dw = Math.max(1, Math.round(sw * scale));
+        let dh = Math.max(1, Math.round(sh * scale));
+        const minEdge = 240;
+        if (Math.min(dw, dh) < minEdge) {
+          const up = minEdge / Math.min(dw, dh);
+          dw = Math.max(minEdge, Math.round(dw * up));
+          dh = Math.max(minEdge, Math.round(dh * up));
+        }
         const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, Math.round(sw * scale));
-        canvas.height = Math.max(1, Math.round(sh * scale));
+        canvas.width = dw;
+        canvas.height = dh;
         const ctx = canvas.getContext("2d");
         if (!ctx) {
           resolve(source);

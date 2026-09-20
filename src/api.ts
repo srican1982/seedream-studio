@@ -68,7 +68,7 @@ function providerFor(model: string) {
 
 type RunwareEnvelope = {
   data?: Array<Record<string, unknown>>;
-  errors?: Array<{ code?: string; message?: string; taskUUID?: string }>;
+  errors?: Array<{ code?: string; message?: string; taskUUID?: string; parameter?: string }>;
 };
 
 export type Health = { ok: boolean; configured: boolean; grok: boolean; native: boolean };
@@ -110,7 +110,20 @@ export function hasLocalOpenRouterKey() {
 }
 
 function errorMessage(payload: RunwareEnvelope, fallback = "Runware request failed") {
-  return payload.errors?.map((e) => e.message).filter(Boolean).join(" · ") || fallback;
+  const parts = (payload.errors || [])
+    .map((e) => {
+      const extra = [e.code, e.parameter].filter(Boolean).join(" ");
+      return [e.message || "", extra].filter(Boolean).join(" · ");
+    })
+    .filter(Boolean);
+  if (parts.length) return parts.join(" · ");
+  try {
+    const raw = JSON.stringify(payload);
+    if (raw && raw !== "{}") return `${fallback}: ${raw.slice(0, 400)}`;
+  } catch {
+    /* ignore */
+  }
+  return fallback;
 }
 
 function rowErrorMessage(row: Record<string, unknown>) {
@@ -288,15 +301,21 @@ async function uploadRunwareMedia(media: string): Promise<string> {
   throw new Error("Could not upload the file.");
 }
 
+function isRunwareId(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function hostedWanImage(value: string) {
+  if (isUsableMediaUrl(value) && /^https?:\/\//i.test(value)) return value;
+  if (isRunwareId(value)) return value;
+  return "";
+}
+
 async function uploadRunwareImage(image: string): Promise<string> {
   const value = image.trim();
   if (!value) throw new Error("Missing image.");
-  if (isUsableMediaUrl(value) && /^https?:\/\//i.test(value)) return value;
-  try {
-    return await uploadRunwareMedia(value);
-  } catch {
-    /* imageUpload next */
-  }
+  const already = hostedWanImage(value);
+  if (already) return already;
   try {
     const payload = await postRunware([
       {
@@ -307,13 +326,26 @@ async function uploadRunwareImage(image: string): Promise<string> {
     ]);
     if (!payload.errors?.length) {
       const row = payload.data?.[0] || {};
-      const uploaded = String(row.imageURL || row.imageUUID || "");
+      const uploaded = hostedWanImage(String(row.imageURL || row.imageUUID || ""));
       if (uploaded) return uploaded;
     }
   } catch {
-    /* keep the data URI — native upload can fail while inference still accepts it */
+    /* mediaStorage next */
   }
-  return value;
+  const stored = hostedWanImage(await uploadRunwareMedia(value));
+  if (stored) return stored;
+  throw new Error("Could not upload the photo to Wan.");
+}
+
+async function prepareWanImage(image: string, aspect: TabState["aspect"]): Promise<string> {
+  const fitted = await fitImageDataUriToAspect(image, aspect);
+  if (/^data:image\/(heic|heif)/i.test(fitted)) {
+    throw new Error("Wan needs a JPEG or PNG. That photo is HEIC.");
+  }
+  if (!isUsableReferenceImage(fitted) && !hostedWanImage(fitted)) {
+    throw new Error("Wan could not read that photo. Attach a JPEG or PNG.");
+  }
+  return uploadRunwareImage(fitted);
 }
 
 function uuidFromMediaUrl(url: string) {
@@ -750,39 +782,31 @@ export async function generateVideo(
       .map((img) => stillSrc(img))
       .filter(isUsableReferenceImage);
     const refs = images.length ? images : state.images.map((img) => stillSrc(img)).filter(isUsableReferenceImage);
-    const fittedFrames = frames.length ? await Promise.all(frames.slice(0, 2).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
+    if ((state.wanFrames || []).length && !frames.length) {
+      throw new Error("Those frame photos could not be read as JPEG or PNG. Attach them again.");
+    }
     const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
     const audios = await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
-    if (fittedFrames.length) {
-      const frameIds = await Promise.all(fittedFrames.map((image) => uploadRunwareImage(image)));
-      const inputs: Record<string, unknown> = {
-        frameImages: frameIds.map((image, index) => ({
-          image,
-          frame: fittedFrames.length === 1 || index === 0 ? "first" : "last",
-        })),
-      };
-      if (videos.length) inputs.referenceVideos = videos;
-      if (audios.length) inputs.referenceAudios = audios;
-      task.inputs = inputs;
+    const pinFrames = Boolean(frames.length && !videos.length && !audios.length);
+    if (pinFrames) {
+      const hosted = await Promise.all(frames.slice(0, 2).map((image) => prepareWanImage(image, state.aspect)));
+      task.inputs = { frameImages: hosted };
       task.resolution = resolution;
-      task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), {
-        frames: true,
-        video: Boolean(videos.length),
-        audio: Boolean(audios.length),
-      });
+      task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), { frames: true });
     } else {
-      const fittedRefs = refs.length ? await Promise.all(refs.slice(0, 10).map((image) => fitImageDataUriToAspect(image, state.aspect))) : [];
+      const stills = (frames.length ? frames : refs).slice(0, 10);
+      const hostedRefs = stills.length ? await Promise.all(stills.map((image) => prepareWanImage(image, state.aspect))) : [];
       const inputs: Record<string, unknown> = {};
-      if (fittedRefs.length) inputs.referenceImages = fittedRefs;
+      if (hostedRefs.length) inputs.referenceImages = hostedRefs;
       if (videos.length) inputs.referenceVideos = videos;
       if (audios.length) inputs.referenceAudios = audios;
       if (Object.keys(inputs).length) task.inputs = inputs;
       task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), {
-        refs: Boolean(fittedRefs.length),
+        refs: Boolean(hostedRefs.length),
         video: Boolean(videos.length),
         audio: Boolean(audios.length),
       });
-      if (fittedRefs.length || videos.length) task.resolution = resolution;
+      if (hostedRefs.length || videos.length) task.resolution = resolution;
       else {
         const size = wanSize(state.aspect, resolution);
         task.width = size.width;
