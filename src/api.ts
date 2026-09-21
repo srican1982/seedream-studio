@@ -11,7 +11,7 @@ import {
   wanPositivePrompt,
   wanSize,
 } from "./models";
-import { fileToDataUri, fitImageDataUriToAspect, isImageFile, isUsableMediaUrl, isUsableReferenceImage, uuid } from "./media";
+import { ensureWanAudioDataUri, fileToDataUri, fitImageDataUriToAspect, isImageFile, isUsableMediaUrl, isUsableReferenceImage, uuid } from "./media";
 import { nativePollRunware, nativeSleep, withKeepAlive } from "./keep-alive";
 import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
@@ -800,7 +800,9 @@ export async function generateVideo(
       task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), { frames: true, aspect: state.aspect });
     } else {
       const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
-      const audios = await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
+      const audios = await Promise.all(
+        (state.wanAudios || []).filter(Boolean).slice(0, 5).map(async (item) => uploadRunwareMedia(await ensureWanAudioDataUri(item)))
+      );
       const hostedRefs = refs.length ? await Promise.all(refs.slice(0, 10).map((image) => prepareWanImage(image, state.aspect))) : [];
       const inputs: Record<string, unknown> = {};
       if (hostedRefs.length) inputs.referenceImages = hostedRefs;

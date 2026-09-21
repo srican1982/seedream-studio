@@ -1,4 +1,5 @@
 import { registerPlugin } from "@capacitor/core";
+import { blobToWavBlob } from "./media";
 import { isNativeApp } from "./native";
 
 type VoiceRecordPlugin = {
@@ -33,6 +34,11 @@ export function spokenAudioType(mime: string) {
 export function spokenAudioFile(parts: BlobPart[], mime: string) {
   const type = spokenAudioType(mime);
   return new File(parts, `spoken-${Date.now()}.${recorderExt(type)}`, { type });
+}
+
+export async function spokenWavFile(blob: Blob) {
+  const wav = await blobToWavBlob(blob);
+  return new File([wav], `spoken-${Date.now()}.wav`, { type: "audio/wav" });
 }
 
 export function formatRecordSecs(secs: number) {

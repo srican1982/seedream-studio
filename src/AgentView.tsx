@@ -64,7 +64,7 @@ import { fileToDataUri, isAudioFile, isImageFile, isImagePreview, isVideoFile, u
 import { forgetPerson, getPeople, loadPeople, peopleNames, savePerson } from "./people-store";
 import { isNativeApp, pickGalleryMedia } from "./native";
 import type { LocalImage, ResultKind, StudioResult } from "./types";
-import { formatRecordSecs, recorderMime, requestMicrophone, spokenAudioFile, VOICE_MAX_SECS } from "./voice-record";
+import { formatRecordSecs, recorderMime, requestMicrophone, spokenWavFile, VOICE_MAX_SECS } from "./voice-record";
 
 const COMPOSER_MIN = 40;
 const COMPOSER_MAX = 200;
@@ -424,15 +424,15 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     clearRecordTimer();
     let file: File;
     try {
-      file = await new Promise<File>((resolve, reject) => {
+      const raw = await new Promise<Blob>((resolve, reject) => {
         recorder.onstop = () => {
           const mime = recorder.mimeType || "audio/webm";
-          const blob = new Blob(chunksRef.current, { type: mime.split(";")[0] });
+          const blob = new Blob(chunksRef.current, { type: mime.split(";")[0] || mime });
           if (blob.size < 200) {
             reject(new Error("That recording was empty. Try Speak again."));
             return;
           }
-          resolve(spokenAudioFile([blob], mime));
+          resolve(blob);
         };
         recorder.onerror = () => reject(new Error("Could not finish the recording."));
         try {
@@ -441,6 +441,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
           reject(error instanceof Error ? error : new Error("Could not finish the recording."));
         }
       });
+      file = await spokenWavFile(raw);
     } catch (error) {
       resetRecorder();
       speakError(error);

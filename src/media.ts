@@ -66,6 +66,95 @@ export function isAudioFile(file: File) {
   return /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(file.name);
 }
 
+export function isWanAudioFormat(value: string, mime = "") {
+  const check = `${mime} ${value}`;
+  return /audio\/(wav|x-wav|mpeg|mp3)/i.test(check) || /\.(wav|mp3)(\?|$)/i.test(value);
+}
+
+function audioContextCtor() {
+  const w = window as Window & { webkitAudioContext?: typeof AudioContext };
+  return window.AudioContext || w.webkitAudioContext;
+}
+
+function mixMono(buffer: AudioBuffer, maxSamples: number) {
+  const length = Math.min(buffer.length, maxSamples);
+  const out = new Float32Array(length);
+  const left = buffer.getChannelData(0);
+  if (buffer.numberOfChannels < 2) {
+    out.set(left.subarray(0, length));
+    return out;
+  }
+  const right = buffer.getChannelData(1);
+  for (let i = 0; i < length; i++) out[i] = (left[i] + right[i]) / 2;
+  return out;
+}
+
+function resampleMono(samples: Float32Array, fromRate: number, toRate: number) {
+  if (fromRate === toRate) return samples;
+  const ratio = fromRate / toRate;
+  const length = Math.max(1, Math.floor(samples.length / ratio));
+  const out = new Float32Array(length);
+  for (let i = 0; i < length; i++) out[i] = samples[Math.min(samples.length - 1, Math.floor(i * ratio))];
+  return out;
+}
+
+export function encodeWav(samples: Float32Array, sampleRate: number) {
+  const dataSize = samples.length * 2;
+  const out = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(out);
+  const ascii = (offset: number, text: string) => {
+    for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+  };
+  ascii(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  ascii(36, "data");
+  view.setUint32(40, dataSize, true);
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++) {
+    const clipped = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, clipped < 0 ? clipped * 0x8000 : clipped * 0x7fff, true);
+    offset += 2;
+  }
+  return new Blob([out], { type: "audio/wav" });
+}
+
+export async function blobToWavBlob(blob: Blob, maxSecs = 60): Promise<Blob> {
+  const Ctor = audioContextCtor();
+  if (!Ctor) throw new Error("This device cannot convert audio to WAV.");
+  const ctx = new Ctor();
+  try {
+    const raw = await blob.arrayBuffer();
+    const buffer = await ctx.decodeAudioData(raw.slice(0));
+    const rate = Math.min(22050, buffer.sampleRate);
+    const maxSamples = Math.floor(buffer.sampleRate * maxSecs);
+    const mono = resampleMono(mixMono(buffer, maxSamples), buffer.sampleRate, rate);
+    return encodeWav(mono, rate);
+  } catch {
+    throw new Error("Wan needs WAV or MP3. That sound could not be converted.");
+  } finally {
+    await ctx.close().catch(() => undefined);
+  }
+}
+
+export async function ensureWanAudioDataUri(source: string): Promise<string> {
+  const value = source.trim();
+  if (!value) throw new Error("Missing audio.");
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) return value;
+  if (isWanAudioFormat(value)) return value;
+  const blob = await fetch(value).then((res) => res.blob());
+  const wav = await blobToWavBlob(blob);
+  return readAsDataUrl(new File([wav], "spoken.wav", { type: "audio/wav" }));
+}
+
 export function isUsableReferenceImage(value: string) {
   if (!value) return false;
   if (/^data:image\/(png|jpe?g|webp|heic|heif|avif);base64,/i.test(value)) {
