@@ -178,16 +178,49 @@ export function parseWanSizeText(text: string): WanSizeOption | null {
   return WAN_SIZE_OPTIONS.find((item) => item.aspect === aspect && item.resolution === tier) || null;
 }
 
+export function sizeOptionOf(aspect: Aspect, resolution: VideoResolution): WanSizeOption {
+  return (
+    WAN_SIZE_OPTIONS.find((item) => item.aspect === aspect && item.resolution === resolution) ||
+    WAN_SIZE_OPTIONS[0]
+  );
+}
+
 export function pickWanSize(memory: AgentMemory, id: string): AgentMemory {
   const opt = WAN_SIZE_OPTIONS.find((item) => item.id === id);
   if (!opt) return memory;
-  return { ...memory, wanSizeId: opt.id, wanAspect: opt.aspect, wanResolution: opt.resolution };
+  const text = `Using ${opt.label} (${opt.aspect} ${opt.resolution}). Tap Next to generate, or tap another size.`;
+  const messages = [...memory.messages];
+  const last = messages[messages.length - 1];
+  if (
+    last?.role === "assistant" &&
+    (memory.attachQuiz === "size" || /Skip = 480p landscape|Using .+ Tap Next to generate/i.test(last.text))
+  ) {
+    messages[messages.length - 1] = { ...last, text };
+  } else {
+    messages.push({ id: uuid(), role: "assistant", text, createdAt: Date.now() });
+  }
+  return { ...memory, wanSizeId: opt.id, wanAspect: opt.aspect, wanResolution: opt.resolution, messages };
 }
 
 export function videoSizeFromMemory(memory: AgentMemory, brief = latestUserText(memory)): WanSizeOption {
   const picked = WAN_SIZE_OPTIONS.find((item) => item.id === memory.wanSizeId);
   if (picked) return picked;
+  if (memory.wanQuizDone && (memory.wanAspect === "9:16" || memory.wanResolution === "720p" || memory.wanResolution === "1080p")) {
+    return sizeOptionOf(memory.wanAspect, memory.wanResolution);
+  }
   return defaultVideoSize(brief);
+}
+
+function lockVideoSizePrompt(prompt: string, size: WanSizeOption) {
+  const vertical = size.aspect === "9:16";
+  let text = prompt
+    .replace(/\b(480p|720p|1080p)\s+(landscape|vertical|widescreen|portrait)\b/gi, size.label)
+    .replace(/\b(landscape|widescreen)(?:\s*16\s*[:x]\s*9)?\b/gi, vertical ? "vertical" : "landscape")
+    .replace(/\b(vertical|portrait)(?:\s*9\s*[:x]\s*16)?\b/gi, vertical ? "vertical" : "landscape");
+  if (!new RegExp(`${size.resolution}|${size.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i").test(text)) {
+    text = `${text.trim()}\n\n${size.label} (${size.aspect}).`;
+  }
+  return text;
 }
 
 export function mediaKindOf(img: LocalImage): LocalMediaKind {
@@ -706,7 +739,7 @@ How to write shot.prompt:
 - Training photos often come from another room. Never copy those rooms into the movie. If clip-end exists, that place is the whole clip. Do not open or end in a bedroom.
 - Qwen 3.0 Pro can only take 3 reference images. Wan can take 10. If there are more, keep the ones the user cares about most, usually new uploads first.
 - For video, describe the motion they asked in the same explicit way. Include scene sound. Add spoken words only if they asked someone to say them.
-- Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. Video size is the quiz pick (480p/720p/1080p, landscape 16:9 or vertical 9:16). Duration is what they said, else 10s. Wan max 30s per clip.
+- Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. If an Output size / Using line is given, that size is locked. Write that resolution and orientation only. Never write 480p landscape unless that is the pick. Never write landscape or 16:9 when the pick is vertical 9:16. Duration is what they said, else 10s. Wan max 30s per clip.
 
 If they are only chatting, return shots: [] and put your answer in reply.
 reply must be one short sentence or "". Never put JSON, markdown, or the generator prompt in reply. The Qwen/Wan instruction belongs only in shots[].prompt.
@@ -1303,7 +1336,7 @@ export function attachQuizQuestion(step: AttachQuizStep) {
     return "Question 4 — Ref audio: tap 0–5 sounds. Then Next or Skip.\n\n4 Ref audio: 0–5. Skip හෝ Next.";
   }
   if (step === "size") {
-    return "Size: tap 480p / 720p / 1080p and landscape or vertical. Skip = 480p landscape. Cancel starts the quiz over.\n\nSize. Skip = 480p landscape.";
+    return "Size: tap one chip — 480p / 720p / 1080p, landscape or vertical. The chip you tap is the size. Skip without tapping = 480p landscape.\n\nSize. Tap a chip. Skip only if you want 480p landscape.";
   }
   return "";
 }
@@ -1840,7 +1873,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
             : memory.wanAudios.length
               ? `${memory.wanAudios.length} reference audio(s) as Audio 1, Audio 2, … (unheard).`
               : "No reference audio.",
-          `Output size is ${videoSizeFromMemory(memory, brief).label} (${videoSizeFromMemory(memory, brief).aspect} ${videoSizeFromMemory(memory, brief).resolution}).`,
+          `LOCKED output size: ${videoSizeFromMemory(memory, brief).label} (${videoSizeFromMemory(memory, brief).aspect} ${videoSizeFromMemory(memory, brief).resolution}). Write this size only. Do not write 480p landscape unless this line is 480p landscape.`,
           "Wan frames = first/last only. Wan refs = pictures + video + audio together. Never mix the two paths.",
         ].join(" ")
       : picked
@@ -1930,13 +1963,14 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     const identityRefIds = poseJob ? libraryIds(library, identity) : emptyIds;
     const poseRefIds = poseJob ? libraryIds(library, pose) : emptyIds;
     const quizFields = quizShotFields(memory, kind, movieFollow);
+    const drafted = keepSinhalaDialog(
+      poseJob ? applyPoseIdentityLock(String(row.prompt || brief).trim() || brief, identity.length) : String(row.prompt || brief).trim() || brief,
+      brief
+    );
     const base = {
       kind,
       title: String(row.title || `${kind} ${shots.length + 1}`).trim(),
-      prompt: keepSinhalaDialog(
-        poseJob ? applyPoseIdentityLock(String(row.prompt || brief).trim() || brief, identity.length) : String(row.prompt || brief).trim() || brief,
-        brief
-      ),
+      prompt: kind === "video" ? lockVideoSizePrompt(drafted, sizeOptionOf(quizFields.aspect, quizFields.resolution)) : drafted,
       duration: kind === "video" ? clipVideoDuration(model as VideoTabId, wanted) : 0,
       model,
       refSource: poseJob ? "user" as const : shotRefs,
@@ -1985,10 +2019,11 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     const identity = split?.identity || [];
     for (const poseNum of poses.length ? poses : [0]) {
       const quizFields = quizShotFields(memory, kind, movieFollow);
+      const drafted = keepSinhalaDialog(poseJob ? applyPoseIdentityLock(brief, identity.length) : brief, brief);
       const base = {
         kind,
         title: kind === "video" ? "Video" : poses.length > 1 ? `Still · pose ${poseNum}` : "Still",
-        prompt: keepSinhalaDialog(poseJob ? applyPoseIdentityLock(brief, identity.length) : brief, brief),
+        prompt: kind === "video" ? lockVideoSizePrompt(drafted, sizeOptionOf(quizFields.aspect, quizFields.resolution)) : drafted,
         duration,
         model,
         refSource: poseJob ? "user" as const : refSource,
@@ -2377,7 +2412,7 @@ export function describePlan(_lock: AgentLock, shots: AgentShot[]) {
     const extra =
       shot.kind === "video"
         ? [
-            `${shot.duration}s ${shot.resolution} ${shot.aspect || "16:9"}`,
+            `${shot.duration}s ${sizeOptionOf((shot.aspect || "16:9") as Aspect, shot.resolution).label}`,
             shot.useLastFrame ? "last frame" : shot.wanFrameIds.length > 1 ? "first + last frame" : shot.wanFrameIds.length ? "first frame" : "",
             shot.wanPeopleIds.length ? `${shot.wanPeopleIds.length} people photo${shot.wanPeopleIds.length === 1 ? "" : "s"}` : "",
             shot.wanClipIds.length && !shot.useLastFrame && !shot.wanFrameIds.length

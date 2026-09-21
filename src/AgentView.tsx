@@ -978,7 +978,9 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
             ? `Change photos · ${memory.chosenRefs.length}/${photoLimit}`
             : quiz
               ? memory.attachQuiz === "size"
-                ? "Video size"
+                ? memory.wanSizeId
+                  ? WAN_SIZE_OPTIONS.find((item) => item.id === memory.wanSizeId)?.label || "Video size"
+                  : "Video size"
                 : `${quizTitle} · ${memory.chosenRefs.length}/${photoLimit}`
               : picking
                 ? `Tap photos in order · ${memory.chosenRefs.length}/${VIDEO_REF_LIMIT}`

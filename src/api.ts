@@ -143,12 +143,18 @@ function rowErrorMessage(row: Record<string, unknown>) {
 
 function scrubWanPrompt(
   prompt: string,
-  slots: { frames?: boolean; refs?: boolean; video?: boolean; audio?: boolean }
+  slots: { frames?: boolean; refs?: boolean; video?: boolean; audio?: boolean; aspect?: TabState["aspect"] }
 ) {
   let text = prompt.trim();
   if (!slots.refs) text = text.replace(/\bImages?\s*\d+\b/gi, slots.frames ? "the opening picture" : "the subject");
   if (!slots.video) text = text.replace(/\bVideos?\s*\d+\b/gi, "the motion");
   if (!slots.audio) text = text.replace(/\bAudios?\s*\d+\b/gi, "the sound");
+  if (slots.aspect === "9:16") {
+    text = text.replace(/\b(480p|720p|1080p)\s+landscape\b/gi, `$1 vertical`).replace(/\blandscape\b/gi, "vertical");
+  }
+  if (slots.aspect === "16:9") {
+    text = text.replace(/\b(480p|720p|1080p)\s+vertical\b/gi, `$1 landscape`).replace(/\bvertical\b/gi, "landscape");
+  }
   return text;
 }
 
@@ -791,7 +797,7 @@ export async function generateVideo(
         })),
       };
       task.resolution = resolution;
-      task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), { frames: true });
+      task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), { frames: true, aspect: state.aspect });
     } else {
       const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
       const audios = await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
@@ -805,6 +811,7 @@ export async function generateVideo(
         refs: Boolean(hostedRefs.length),
         video: Boolean(videos.length),
         audio: Boolean(audios.length),
+        aspect: state.aspect,
       });
       if (hostedRefs.length || videos.length) task.resolution = resolution;
       else {
