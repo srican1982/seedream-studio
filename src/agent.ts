@@ -225,6 +225,9 @@ function lockVideoSizePrompt(prompt: string, size: WanSizeOption) {
 }
 
 export function mediaKindOf(img: LocalImage): LocalMediaKind {
+  if (/^spoken[-_]/i.test(img.name || "") || /^data:audio\//i.test(img.dataUri || "") || /^audio\//i.test(img.mime || "")) {
+    return "audio";
+  }
   if (img.mediaKind === "video" || img.mediaKind === "audio" || img.mediaKind === "image") return img.mediaKind;
   const src = `${img.dataUri || ""} ${img.preview || ""} ${img.name || ""} ${img.mime || ""}`;
   if (/^data:video\/|video\/|\.(mp4|webm|mov|m4v)(\?|$)/i.test(src)) return "video";

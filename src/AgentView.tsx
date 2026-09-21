@@ -64,7 +64,7 @@ import { fileToDataUri, isAudioFile, isImageFile, isImagePreview, isVideoFile, u
 import { forgetPerson, getPeople, loadPeople, peopleNames, savePerson } from "./people-store";
 import { isNativeApp, pickGalleryMedia } from "./native";
 import type { LocalImage, ResultKind, StudioResult } from "./types";
-import { formatRecordSecs, recorderExt, recorderMime, requestMicrophone, VOICE_MAX_SECS } from "./voice-record";
+import { formatRecordSecs, recorderMime, requestMicrophone, spokenAudioFile, VOICE_MAX_SECS } from "./voice-record";
 
 const COMPOSER_MIN = 40;
 const COMPOSER_MAX = 200;
@@ -286,13 +286,13 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     return { ...next, messages: [...next.messages, message] };
   }
 
-  async function addFiles(list: File[] | FileList | null) {
+  async function addFiles(list: File[] | FileList | null, forceKind?: LocalImage["mediaKind"]) {
     const files = list ? Array.from(list) : [];
     if (!files.length) return [];
     const extra: LocalImage[] = [];
     const room = Math.max(0, ATTACH_LIMIT - pending.length);
     for (const file of files.slice(0, room)) {
-      const kind = isVideoFile(file) ? "video" : isAudioFile(file) ? "audio" : isImageFile(file) ? "image" : null;
+      const kind = forceKind || (isAudioFile(file) ? "audio" : isVideoFile(file) ? "video" : isImageFile(file) ? "image" : null);
       if (!kind) continue;
       if (kind === "image" && file.size > IMAGE_BYTES_MAX) continue;
       if (kind !== "image" && file.size > MEDIA_BYTES_MAX) continue;
@@ -432,7 +432,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
             reject(new Error("That recording was empty. Try Speak again."));
             return;
           }
-          resolve(new File([blob], `spoken-${Date.now()}.${recorderExt(mime)}`, { type: blob.type || mime.split(";")[0] }));
+          resolve(spokenAudioFile([blob], mime));
         };
         recorder.onerror = () => reject(new Error("Could not finish the recording."));
         try {
@@ -453,7 +453,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     setRecording(false);
     setRecordSecs(0);
     try {
-      const extra = await addFiles([file]);
+      const extra = await addFiles([file], "audio");
       const current = memoryRef.current;
       if (isAttachQuiz(current) && current.attachQuiz === "audio" && extra.length) {
         const limit = quizStepLimit("audio");

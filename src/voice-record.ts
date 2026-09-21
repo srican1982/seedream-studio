@@ -21,6 +21,20 @@ export function recorderExt(mime: string) {
   return "webm";
 }
 
+export function spokenAudioType(mime: string) {
+  const raw = (mime || "audio/webm").split(";")[0].trim().toLowerCase();
+  if (raw.startsWith("audio/")) return raw;
+  if (raw === "video/webm") return "audio/webm";
+  if (raw === "video/mp4") return "audio/mp4";
+  if (raw.includes("aac")) return "audio/aac";
+  return "audio/webm";
+}
+
+export function spokenAudioFile(parts: BlobPart[], mime: string) {
+  const type = spokenAudioType(mime);
+  return new File(parts, `spoken-${Date.now()}.${recorderExt(type)}`, { type });
+}
+
 export function formatRecordSecs(secs: number) {
   const safe = Math.max(0, Math.floor(secs));
   const minutes = Math.floor(safe / 60);

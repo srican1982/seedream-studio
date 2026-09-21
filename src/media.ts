@@ -51,14 +51,19 @@ export function isImageFile(file: File) {
   return /\.(jpe?g|png|webp|gif|heic|heif|bmp|avif)$/i.test(file.name);
 }
 
+export function isSpokenAudioName(name: string) {
+  return /^spoken[-_]/i.test(name || "");
+}
+
 export function isVideoFile(file: File) {
+  if (file.type.startsWith("audio/") || isSpokenAudioName(file.name)) return false;
   if (file.type.startsWith("video/")) return true;
   return /\.(mp4|webm|mov|m4v)$/i.test(file.name);
 }
 
 export function isAudioFile(file: File) {
-  if (file.type.startsWith("audio/")) return true;
-  return /\.(mp3|wav|m4a|aac|ogg|flac|webm)$/i.test(file.name);
+  if (file.type.startsWith("audio/") || isSpokenAudioName(file.name)) return true;
+  return /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(file.name);
 }
 
 export function isUsableReferenceImage(value: string) {
