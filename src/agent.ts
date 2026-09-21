@@ -249,6 +249,7 @@ export type AgentMemory = {
   waitingForApproval: boolean;
   awaitingVideoRefs: boolean;
   awaitingRecreate: boolean;
+  awaitingPromptReview: boolean;
   recreateShotId: string;
   recreateNote: string;
   hasPickedVideoRefs: boolean;
@@ -284,6 +285,7 @@ export function emptyAgentMemory(): AgentMemory {
     waitingForApproval: false,
     awaitingVideoRefs: false,
     awaitingRecreate: false,
+    awaitingPromptReview: false,
     recreateShotId: "",
     recreateNote: "",
     hasPickedVideoRefs: false,
@@ -373,6 +375,7 @@ function parseStoredMemory(parsed: AgentMemory): AgentMemory {
     waitingForApproval: Boolean(parsed.waitingForApproval),
     awaitingVideoRefs: Boolean(parsed.awaitingVideoRefs),
     awaitingRecreate: Boolean(parsed.awaitingRecreate),
+    awaitingPromptReview: Boolean(parsed.awaitingPromptReview),
     recreateShotId: parsed.recreateShotId || "",
     recreateNote: parsed.recreateNote || "",
     hasPickedVideoRefs: Boolean(parsed.hasPickedVideoRefs),
@@ -402,13 +405,15 @@ function sanitizeMemory(memory: AgentMemory): AgentMemory {
   const usable = Boolean(target?.result?.url || target?.prompt);
   const canRecreate = Boolean(memory.awaitingRecreate && target && usable);
   const canApprove = Boolean(nextPendingShot(memory) || lastActionableShot(memory));
+  const reviewing = Boolean(memory.awaitingPromptReview && nextPendingShot(memory));
   const quiz = isQuizStep(memory.attachQuiz || "") ? memory.attachQuiz : "";
   return {
     ...memory,
-    awaitingRecreate: canRecreate,
-    recreateShotId: canRecreate ? memory.recreateShotId || target?.id || "" : "",
-    recreateNote: canRecreate ? memory.recreateNote : "",
-    waitingForApproval: Boolean(memory.waitingForApproval && canApprove),
+    awaitingRecreate: canRecreate && !reviewing,
+    awaitingPromptReview: reviewing,
+    recreateShotId: canRecreate && !reviewing ? memory.recreateShotId || target?.id || "" : "",
+    recreateNote: canRecreate && !reviewing ? memory.recreateNote : "",
+    waitingForApproval: Boolean(memory.waitingForApproval && canApprove && !reviewing),
     attachQuiz: quiz,
     shots: Array.isArray(memory.shots)
       ? memory.shots.map((shot) => ({
@@ -1000,10 +1005,65 @@ export function nextPendingShot(memory: AgentMemory) {
   return memory.shots.find((shot) => shot.status === "pending") || null;
 }
 
+export function reviewShot(memory: AgentMemory) {
+  return memory.awaitingPromptReview ? nextPendingShot(memory) : null;
+}
+
+export function isPromptSend(text: string) {
+  return /^(send|go|do it|generate|make it|ok|okay|k|yes|continue|next)(?:\s*[.!])*$/i.test(text.trim());
+}
+
+export function promptReviewQuestion(shot: AgentShot) {
+  const dest = shot.kind === "video" ? "Wan" : "Qwen";
+  return `Edit this ${shot.title} prompt if you want. Tap Send to give it to ${dest}, or Cancel to drop what is left.`;
+}
+
+export function beginPromptReview(memory: AgentMemory, shot?: AgentShot | null): AgentMemory {
+  const target = shot || nextPendingShot(memory);
+  if (!target) return { ...memory, awaitingPromptReview: false };
+  return {
+    ...memory,
+    awaitingPromptReview: true,
+    waitingForApproval: false,
+    awaitingRecreate: false,
+    recreateShotId: "",
+    recreateNote: "",
+    awaitingVideoRefs: false,
+    attachQuiz: "",
+  };
+}
+
+export function applyReviewedPrompt(memory: AgentMemory, prompt: string): { memory: AgentMemory; shot: AgentShot } {
+  const shot = nextPendingShot(memory);
+  if (!shot) throw new Error("Nothing to send yet.");
+  const trimmed = prompt.trim();
+  const text = !trimmed || isPromptSend(trimmed) ? shot.prompt : trimmed;
+  const next: AgentMemory = {
+    ...memory,
+    awaitingPromptReview: false,
+    waitingForApproval: false,
+    shots: memory.shots.map((item) => (item.id === shot.id ? { ...item, prompt: text } : item)),
+  };
+  const updated = next.shots.find((item) => item.id === shot.id);
+  if (!updated) throw new Error("Nothing to send yet.");
+  return { memory: next, shot: updated };
+}
+
+export function cancelPromptReview(memory: AgentMemory): AgentMemory {
+  const kept = memory.shots.filter((shot) => shot.status !== "pending");
+  return {
+    ...memory,
+    awaitingPromptReview: false,
+    waitingForApproval: Boolean(kept.some((shot) => shot.status === "done" || shot.status === "error")),
+    shots: kept,
+  };
+}
+
 export function continueStatus(memory: AgentMemory): { memory: AgentMemory; next: AgentShot | null; text: string } {
   const cleared: AgentMemory = {
     ...memory,
     awaitingRecreate: false,
+    awaitingPromptReview: false,
     recreateShotId: "",
     recreateNote: "",
     awaitingVideoRefs: false,
@@ -1020,7 +1080,7 @@ export function continueStatus(memory: AgentMemory): { memory: AgentMemory; next
     return {
       memory: cleared,
       next,
-      text: `Moving forward.\n\nNow: ${next.title} (${kind}).${queue}`,
+      text: `Moving forward.\n\nNow: ${next.title} (${kind}). Edit the prompt below, then Send.${queue}`,
     };
   }
   const lastBit =
@@ -1072,6 +1132,7 @@ export function beginRecreate(memory: AgentMemory, shot: AgentShot, note = ""): 
   return {
     ...memory,
     awaitingRecreate: true,
+    awaitingPromptReview: false,
     recreateShotId: shot.id,
     recreateNote: note,
     awaitingVideoRefs: false,
@@ -1124,6 +1185,7 @@ export async function applyRecreateEdits(
     ...reset,
     brief: note || reset.brief,
     awaitingRecreate: false,
+    awaitingPromptReview: false,
     recreateShotId: "",
     recreateNote: "",
     awaitingVideoRefs: false,
@@ -1231,7 +1293,7 @@ export function approvalText(memory: AgentMemory, shot: AgentShot) {
       : `That one failed. Continue to move on, or recreate this if you want it remade.`;
   }
   if (pending) {
-    return `Now: ${pending.title} is next. Continue to make that. Recreate this only if you want this last piece remade.`;
+    return `Now: ${pending.title} is next. Continue to review that prompt. Recreate this only if you want this last piece remade.`;
   }
   const stills = memory.createdStills.filter((img) => img.name !== CLIP_START && img.name !== CLIP_END).length;
   const videos = memory.shots.filter((item) => item.kind === "video" && item.status === "done").length;
@@ -1387,6 +1449,7 @@ export function beginAttachQuiz(memory: AgentMemory, attached: LocalImage[]): { 
     ...memory,
     awaitingVideoRefs: false,
     awaitingRecreate: false,
+    awaitingPromptReview: false,
     hasPickedVideoRefs: false,
     wanQuizDone: false,
     attachQuiz: "frames",
@@ -2445,6 +2508,7 @@ export async function runAgentShot(
           ? [...memory.createdStills.filter((img) => img.name !== `still-${shotId}`), { ...still, name: `still-${shotId}` }]
           : memory.createdStills,
     waitingForApproval: true,
+    awaitingPromptReview: false,
     shots: memory.shots.map((item) =>
       item.id === shotId ? { ...item, status: "done", result, error: undefined } : item
     ),
@@ -2489,6 +2553,6 @@ export function describePlan(_lock: AgentLock, shots: AgentShot[]) {
     "",
     ...shotLines,
     "",
-    "Reply continue after each one, or recreate that part.",
+    "Edit the first prompt below if you want, then tap Send. After each piece, Continue lets you edit the next one. Cancel drops what is left.",
   ].join("\n");
 }

@@ -1070,6 +1070,10 @@ body.kb-open .composer textarea {
   resize: none;
   line-height: 1.4;
 }
+.recreate-box textarea.prompt-review {
+  min-height: 140px;
+  max-height: 280px;
+}
 .recreate-box-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;

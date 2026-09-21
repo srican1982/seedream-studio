@@ -4,12 +4,15 @@ import {
   askedForVideo,
   askedToGenerate,
   applyRecreateEdits,
+  applyReviewedPrompt,
   approvalText,
   activeChatId,
   advanceAttachQuiz,
   beginAttachQuiz,
+  beginPromptReview,
   beginRecreate,
   cancelAttachQuiz,
+  cancelPromptReview,
   deleteAgentChat,
   describePlan,
   emptyAgentMemory,
@@ -29,6 +32,8 @@ import {
   mediaKindOf,
   nextPendingShot,
   openAgentChat,
+  promptReviewQuestion,
+  reviewShot,
   photoLibrary,
   planAgentJob,
   quizAccepts,
@@ -123,6 +128,8 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       if (!alive) return;
       memoryRef.current = next;
       setMemory(next);
+      const pendingShot = reviewShot(next);
+      if (pendingShot) setDraft(pendingShot.prompt);
       setChats(listAgentChats());
       setChatId(activeChatId());
     });
@@ -139,7 +146,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
   useEffect(() => {
     const el = inputRef.current;
     if (!el) return;
-    if (memory.awaitingRecreate) {
+    if (memory.awaitingRecreate || memory.awaitingPromptReview) {
       el.style.height = "";
       el.scrollTop = el.scrollHeight;
       return;
@@ -152,7 +159,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     requestAnimationFrame(() => {
       el.scrollIntoView({ block: "end", inline: "nearest" });
     });
-  }, [draft, memory.awaitingRecreate]);
+  }, [draft, memory.awaitingRecreate, memory.awaitingPromptReview]);
 
   function openMedia(next: MediaViewer) {
     setViewer(next);
@@ -225,7 +232,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
   function showChat(next: AgentMemory, keepPanel = false) {
     memoryRef.current = next;
     setMemory(next);
-    setDraft("");
+    setDraft(reviewShot(next)?.prompt || "");
     setPending([]);
     refreshChats();
     if (!keepPanel) closeChats();
@@ -311,6 +318,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     current = {
       ...current,
       waitingForApproval: false,
+      awaitingPromptReview: false,
       shots: current.shots.map((item) => (item.id === shot.id ? { ...item, status: "running" } : item)),
     };
     commit(current);
@@ -496,9 +504,70 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     try {
       await withKeepAlive("Updating… You can switch apps.", async () => {
         const edited = await applyRecreateEdits(current, text, extra);
-        commit(edited.memory);
-        await runOne(edited.memory, edited.shot);
+        const reviewing = beginPromptReview(edited.memory, edited.shot);
+        commit(
+          pushMessage(reviewing, {
+            id: uuid(),
+            role: "assistant",
+            text: promptReviewQuestion(edited.shot),
+            createdAt: Date.now(),
+          })
+        );
+        setDraft(edited.shot.prompt);
+        inputRef.current?.focus();
       });
+    } catch (error) {
+      commit(
+        pushMessage(memoryRef.current, {
+          id: uuid(),
+          role: "assistant",
+          text: error instanceof Error ? error.message : "Something went wrong.",
+          createdAt: Date.now(),
+        })
+      );
+    } finally {
+      setBusy(false);
+      setProgress(null);
+    }
+  }
+
+  function cancelReviewedPrompt() {
+    if (busy || !memoryRef.current.awaitingPromptReview) return;
+    const next = cancelPromptReview(memoryRef.current);
+    commit(
+      pushMessage(next, {
+        id: uuid(),
+        role: "assistant",
+        text: "Okay. I did not send that prompt.",
+        createdAt: Date.now(),
+      })
+    );
+    setDraft("");
+  }
+
+  async function sendReviewedPrompt(prompt?: string) {
+    const current = memoryRef.current;
+    if (busy || !current.awaitingPromptReview) return;
+    let applied: { memory: AgentMemory; shot: AgentShot };
+    try {
+      applied = applyReviewedPrompt(current, prompt ?? draft);
+    } catch (error) {
+      commit(
+        pushMessage(current, {
+          id: uuid(),
+          role: "assistant",
+          text: error instanceof Error ? error.message : "Nothing to send yet.",
+          createdAt: Date.now(),
+        })
+      );
+      return;
+    }
+    commit(applied.memory);
+    setDraft("");
+    setBusy(true);
+    setProgress(null);
+    try {
+      await withKeepAlive("Working… You can switch apps.", () => runOne(applied.memory, applied.shot));
     } catch (error) {
       commit(
         pushMessage(memoryRef.current, {
@@ -631,6 +700,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
             awaitingVideoRefs: false,
             attachQuiz: "",
             awaitingRecreate: false,
+            awaitingPromptReview: false,
             recreateShotId: "",
             recreateNote: "",
           },
@@ -651,10 +721,11 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         lock: planned.lock,
         personIds: planned.personIds,
         shots: [...kept, ...planned.shots],
-        waitingForApproval: true,
+        waitingForApproval: false,
         awaitingVideoRefs: false,
         attachQuiz: "",
         awaitingRecreate: false,
+        awaitingPromptReview: false,
         recreateShotId: "",
         recreateNote: "",
       },
@@ -665,9 +736,15 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         createdAt: Date.now(),
       }
     );
-    commit(current);
     const first = planned.shots[0];
-    if (first) await runOne(current, first);
+    if (first) {
+      current = beginPromptReview(current, first);
+      commit(current);
+      setDraft(first.prompt);
+      inputRef.current?.focus();
+      return;
+    }
+    commit(current);
   }
 
   async function usePickedPhotos() {
@@ -695,6 +772,14 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
 
   async function onSend(preset?: string, asRecreate = false) {
     const text = (preset ?? draft).trim();
+    if (memoryRef.current.awaitingPromptReview && !asRecreate) {
+      if (isQuizCancel(text)) {
+        cancelReviewedPrompt();
+        return;
+      }
+      await sendReviewedPrompt(text || draft);
+      return;
+    }
     const recreating = memoryRef.current.awaitingRecreate && Boolean(recreateShot(memoryRef.current, ""));
     if ((!text && pending.length === 0 && !recreating) || busy) return;
     const images = pending;
@@ -745,6 +830,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       current = {
         ...current,
         awaitingRecreate: false,
+        awaitingPromptReview: false,
         recreateShotId: "",
         recreateNote: "",
         waitingForApproval: false,
@@ -754,32 +840,28 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
 
     if (isContinue(userMessage.text) && !images.length && !isAttachQuiz(current)) {
       const step = continueStatus(current);
+      if (!step.next) {
+        commit(
+          pushMessage(step.memory, {
+            id: uuid(),
+            role: "assistant",
+            text: step.text,
+            createdAt: Date.now(),
+          })
+        );
+        return;
+      }
+      const reviewing = beginPromptReview(step.memory, step.next);
       commit(
-        pushMessage(step.memory, {
+        pushMessage(reviewing, {
           id: uuid(),
           role: "assistant",
           text: step.text,
           createdAt: Date.now(),
         })
       );
-      if (!step.next) return;
-      setBusy(true);
-      setProgress(null);
-      try {
-        await withKeepAlive("Working… You can switch apps.", () => runOne(memoryRef.current, step.next!));
-      } catch (error) {
-        commit(
-          pushMessage(memoryRef.current, {
-            id: uuid(),
-            role: "assistant",
-            text: error instanceof Error ? error.message : "Something went wrong.",
-            createdAt: Date.now(),
-          })
-        );
-      } finally {
-        setBusy(false);
-        setProgress(null);
-      }
+      setDraft(step.next.prompt);
+      inputRef.current?.focus();
       return;
     }
 
@@ -788,7 +870,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       return;
     }
     if (current.awaitingRecreate) {
-      current = { ...current, awaitingRecreate: false, recreateShotId: "", recreateNote: "", waitingForApproval: false };
+      current = { ...current, awaitingRecreate: false, awaitingPromptReview: false, recreateShotId: "", recreateNote: "", waitingForApproval: false };
       commit(current);
     }
 
@@ -930,6 +1012,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
   }
 
   function onKey(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (memoryRef.current.awaitingPromptReview) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void onSend();
@@ -938,10 +1021,12 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
 
   const library = photoLibrary(memory, pending);
   const quiz = isAttachQuiz(memory) && !busy;
-  const recreating = memory.awaitingRecreate && !busy && Boolean(recreateShot(memory, ""));
-  const picking = (memory.awaitingVideoRefs || memory.awaitingRecreate || quiz) && !busy;
-  const showQueueContinue = Boolean(nextPendingShot(memory)) && memory.waitingForApproval && !busy && !quiz && !memory.awaitingVideoRefs;
-  const showRecreateThis = Boolean(lastActionableShot(memory)) && memory.waitingForApproval && !busy && !quiz && !memory.awaitingVideoRefs;
+  const reviewing = Boolean(reviewShot(memory)) && !busy;
+  const recreating = memory.awaitingRecreate && !busy && Boolean(recreateShot(memory, "")) && !reviewing;
+  const picking = (memory.awaitingVideoRefs || memory.awaitingRecreate || quiz) && !busy && !reviewing;
+  const showQueueContinue = Boolean(nextPendingShot(memory)) && memory.waitingForApproval && !busy && !quiz && !memory.awaitingVideoRefs && !reviewing;
+  const showRecreateThis = Boolean(lastActionableShot(memory)) && memory.waitingForApproval && !busy && !quiz && !memory.awaitingVideoRefs && !reviewing;
+  const reviewKind = reviewShot(memory)?.kind || "video";
   const recreateKind = memory.shots.find((item) => item.id === memory.recreateShotId)?.kind || "video";
   const photoLimit = recreating ? recreateRefLimit(recreateKind) : quiz ? quizStepLimit(memory.attachQuiz) : VIDEO_REF_LIMIT;
   const quizTitle =
@@ -976,7 +1061,11 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
 
       <div className="chat-toolbar">
         <span>
-          {recreating
+          {reviewing
+            ? reviewKind === "image"
+              ? "Edit the Qwen prompt"
+              : "Edit the Wan prompt"
+            : recreating
             ? `Change photos · ${memory.chosenRefs.length}/${photoLimit}`
             : quiz
               ? memory.attachQuiz === "size"
@@ -1243,7 +1332,31 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       </div>
 
       <div className="chat-dock">
-        {recreating ? (
+        {reviewing ? (
+          <div className="recreate-box">
+            <label htmlFor="prompt-review">
+              {reviewKind === "image" ? "Prompt for Qwen — edit or send" : "Prompt for Wan — edit or send"}
+            </label>
+            <textarea
+              id="prompt-review"
+              ref={inputRef}
+              rows={6}
+              value={draft}
+              className="prompt-review"
+              placeholder="The prompt that will be sent"
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={onKey}
+            />
+            <div className="recreate-box-actions">
+              <button className="ghost-btn" type="button" onClick={() => cancelReviewedPrompt()}>
+                Cancel
+              </button>
+              <button type="button" onClick={() => void sendReviewedPrompt(draft)}>
+                Send
+              </button>
+            </div>
+          </div>
+        ) : recreating ? (
           <div className="recreate-box">
             <label htmlFor="recreate-change">What should I change?</label>
             <textarea
@@ -1290,7 +1403,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
             ))}
           </div>
         ) : null}
-        {recreating ? null : (
+        {recreating || reviewing ? null : (
           <div className="composer">
             <button className="composer-icon" type="button" onClick={() => void pickPhotos()} aria-label="Add file">
               +
