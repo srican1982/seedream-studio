@@ -99,6 +99,23 @@ function MediaThumb({ item }: { item: LocalImage }) {
   return <img src={item.preview || item.dataUri} alt="" />;
 }
 
+function MicIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor">
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
+  );
+}
+
 type AgentViewProps = {
   chatsOpen?: boolean;
   onChatsOpenChange?: (open: boolean) => void;
@@ -350,7 +367,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     const raw = error instanceof Error ? error.message : "Could not use the microphone.";
     const text = /notallowed|permission|denied|blocked/i.test(raw)
       ? "Microphone is blocked. Allow it, then tap Speak again."
-      : /notfound|no microphone/i.test(raw)
+      : /notfound|not found|no microphone|requested device/i.test(raw)
         ? "No microphone found."
         : raw;
     commit(
@@ -1583,7 +1600,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
               aria-label={recording ? "Stop recording" : "Speak"}
               onClick={() => toggleSpeak()}
             >
-              {recording ? "■" : "🎤"}
+              {recording ? <StopIcon /> : <MicIcon />}
             </button>
             <textarea
               ref={inputRef}

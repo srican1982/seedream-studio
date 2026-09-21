@@ -1146,7 +1146,14 @@ body.kb-open .composer textarea {
   height: 40px;
   font-weight: 700;
 }
-.composer-icon { width: 40px; background: #111218; color: var(--muted); }
+.composer-icon {
+  width: 40px;
+  background: #111218;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 .composer-icon.speaking {
   background: #3a1418;
   color: #ffd4d4;
