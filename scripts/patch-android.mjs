@@ -18,6 +18,8 @@ const permissions = [
   '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />',
   '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />',
   '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />',
+  '    <uses-permission android:name="android.permission.RECORD_AUDIO" />',
+  '    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />',
 ];
 
 await mkdir(javaDir, { recursive: true });
@@ -25,6 +27,7 @@ await copyFile(path.join(native, "GallerySavePlugin.java"), path.join(javaDir, "
 await copyFile(path.join(native, "GalleryPickPlugin.java"), path.join(javaDir, "GalleryPickPlugin.java"));
 await copyFile(path.join(native, "KeepAlivePlugin.java"), path.join(javaDir, "KeepAlivePlugin.java"));
 await copyFile(path.join(native, "KeepAliveService.java"), path.join(javaDir, "KeepAliveService.java"));
+await copyFile(path.join(native, "VoiceRecordPlugin.java"), path.join(javaDir, "VoiceRecordPlugin.java"));
 await copyFile(path.join(native, "MainActivity.java"), path.join(javaDir, "MainActivity.java"));
 
 await mkdir(stylesV35Dir, { recursive: true });

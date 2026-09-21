@@ -11,6 +11,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(GallerySavePlugin.class);
         registerPlugin(GalleryPickPlugin.class);
         registerPlugin(KeepAlivePlugin.class);
+        registerPlugin(VoiceRecordPlugin.class);
         super.onCreate(savedInstanceState);
     }
 

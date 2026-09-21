@@ -64,6 +64,7 @@ import { fileToDataUri, isAudioFile, isImageFile, isImagePreview, isVideoFile, u
 import { forgetPerson, getPeople, loadPeople, peopleNames, savePerson } from "./people-store";
 import { isNativeApp, pickGalleryMedia } from "./native";
 import type { LocalImage, ResultKind, StudioResult } from "./types";
+import { formatRecordSecs, recorderExt, recorderMime, requestMicrophone, VOICE_MAX_SECS } from "./voice-record";
 
 const COMPOSER_MIN = 40;
 const COMPOSER_MAX = 200;
@@ -113,12 +114,19 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
   const [progress, setProgress] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [viewer, setViewer] = useState<MediaViewer | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [recordSecs, setRecordSecs] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const memoryRef = useRef(memory);
   const viewerOpen = useRef(false);
   const chatsOpenRef = useRef(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+  const recordTimer = useRef<number | null>(null);
+  const stoppingRef = useRef(false);
   memoryRef.current = memory;
   chatsOpenRef.current = chatsOpen;
 
@@ -160,6 +168,18 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       el.scrollIntoView({ block: "end", inline: "nearest" });
     });
   }, [draft, memory.awaitingRecreate, memory.awaitingPromptReview]);
+
+  useEffect(() => {
+    return () => {
+      if (recordTimer.current) window.clearInterval(recordTimer.current);
+      try {
+        recorderRef.current?.stop();
+      } catch {
+        /* already stopped */
+      }
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
 
   function openMedia(next: MediaViewer) {
     setViewer(next);
@@ -251,7 +271,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
 
   async function addFiles(list: File[] | FileList | null) {
     const files = list ? Array.from(list) : [];
-    if (!files.length) return;
+    if (!files.length) return [];
     const extra: LocalImage[] = [];
     const room = Math.max(0, ATTACH_LIMIT - pending.length);
     for (const file of files.slice(0, room)) {
@@ -275,7 +295,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         mime: file.type,
       });
     }
-    if (!extra.length) return;
+    if (!extra.length) return [];
     setPending((prev) => [...prev, ...extra].slice(0, ATTACH_LIMIT));
     const current = memoryRef.current;
     const merged = [...current.userRefs];
@@ -287,6 +307,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       userRefs: merged.slice(0, ATTACH_LIMIT),
       images: [...current.images, ...extra.filter((img) => img.mediaKind === "image" || !img.mediaKind)].slice(-ATTACH_LIMIT),
     });
+    return extra;
   }
 
   async function pickPhotos() {
@@ -301,6 +322,140 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
       }
     }
     fileRef.current?.click();
+  }
+
+  function clearRecordTimer() {
+    if (recordTimer.current) {
+      window.clearInterval(recordTimer.current);
+      recordTimer.current = null;
+    }
+  }
+
+  function stopMicTracks() {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+  }
+
+  function resetRecorder() {
+    clearRecordTimer();
+    stopMicTracks();
+    recorderRef.current = null;
+    chunksRef.current = [];
+    stoppingRef.current = false;
+    setRecording(false);
+    setRecordSecs(0);
+  }
+
+  function speakError(error: unknown) {
+    const raw = error instanceof Error ? error.message : "Could not use the microphone.";
+    const text = /notallowed|permission|denied|blocked/i.test(raw)
+      ? "Microphone is blocked. Allow it, then tap Speak again."
+      : /notfound|no microphone/i.test(raw)
+        ? "No microphone found."
+        : raw;
+    commit(
+      pushMessage(memoryRef.current, {
+        id: uuid(),
+        role: "assistant",
+        text,
+        createdAt: Date.now(),
+      })
+    );
+  }
+
+  async function startSpeak() {
+    if (busy || recording || memoryRef.current.awaitingPromptReview || stoppingRef.current) return;
+    try {
+      await requestMicrophone();
+      if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+        throw new Error("This device cannot record audio here. Attach a file instead.");
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+      const mime = recorderMime();
+      const recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+      recorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size) chunksRef.current.push(event.data);
+      };
+      recorder.start(250);
+      setRecordSecs(0);
+      setRecording(true);
+      recordTimer.current = window.setInterval(() => {
+        setRecordSecs((secs) => {
+          if (secs + 1 >= VOICE_MAX_SECS) {
+            void stopSpeak();
+            return VOICE_MAX_SECS;
+          }
+          return secs + 1;
+        });
+      }, 1000);
+    } catch (error) {
+      resetRecorder();
+      speakError(error);
+    }
+  }
+
+  async function stopSpeak() {
+    const recorder = recorderRef.current;
+    if (!recorder || stoppingRef.current) {
+      if (!recorder) resetRecorder();
+      return;
+    }
+    stoppingRef.current = true;
+    clearRecordTimer();
+    let file: File;
+    try {
+      file = await new Promise<File>((resolve, reject) => {
+        recorder.onstop = () => {
+          const mime = recorder.mimeType || "audio/webm";
+          const blob = new Blob(chunksRef.current, { type: mime.split(";")[0] });
+          if (blob.size < 200) {
+            reject(new Error("That recording was empty. Try Speak again."));
+            return;
+          }
+          resolve(new File([blob], `spoken-${Date.now()}.${recorderExt(mime)}`, { type: blob.type || mime.split(";")[0] }));
+        };
+        recorder.onerror = () => reject(new Error("Could not finish the recording."));
+        try {
+          recorder.stop();
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error("Could not finish the recording."));
+        }
+      });
+    } catch (error) {
+      resetRecorder();
+      speakError(error);
+      return;
+    }
+    stopMicTracks();
+    recorderRef.current = null;
+    chunksRef.current = [];
+    stoppingRef.current = false;
+    setRecording(false);
+    setRecordSecs(0);
+    try {
+      const extra = await addFiles([file]);
+      const current = memoryRef.current;
+      if (isAttachQuiz(current) && current.attachQuiz === "audio" && extra.length) {
+        const limit = quizStepLimit("audio");
+        const merged = [...current.chosenRefs];
+        for (const img of extra) {
+          if (quizAccepts("audio", img) && !merged.some((item) => item.id === img.id) && merged.length < limit) {
+            merged.push(img);
+          }
+        }
+        commit({ ...current, chosenRefs: merged });
+      }
+    } catch (error) {
+      speakError(error);
+    }
+  }
+
+  function toggleSpeak() {
+    if (recording) void stopSpeak();
+    else void startSpeak();
   }
 
   async function useResult(result: StudioResult) {
@@ -1061,7 +1216,9 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
 
       <div className="chat-toolbar">
         <span>
-          {reviewing
+          {recording
+            ? `Listening · ${formatRecordSecs(recordSecs)}`
+            : reviewing
             ? reviewKind === "image"
               ? "Edit the Qwen prompt"
               : "Edit the Wan prompt"
@@ -1188,7 +1345,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                         : memory.attachQuiz === "clip"
                           ? "Tap up to 5 ref videos, or Skip / None. Cancel starts over."
                           : memory.attachQuiz === "audio"
-                            ? "Tap up to 5 ref audios, or Skip / None. Cancel starts over."
+                            ? "Tap up to 5 ref audios, or Speak to record one. Skip / None. Cancel starts over."
                             : memory.attachQuiz === "pose"
                               ? "Tap pose photos. Those are for the prompt only — Wan does not get them. Or Skip / None. Cancel starts over."
                             : "Attach files if you want, or tap Skip / None."
@@ -1223,14 +1380,25 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
               ) : (
                 <p className="photo-picked-empty">Nothing selected yet</p>
               )}
+              {quiz && memory.attachQuiz === "audio" ? (
+                <button
+                  className={`photo-speak${recording ? " on" : ""}`}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => toggleSpeak()}
+                >
+                  {recording ? `Stop · ${formatRecordSecs(recordSecs)}` : "Speak"}
+                </button>
+              ) : null}
               {quiz ? (
-                <button className="photo-cancel" type="button" onClick={() => cancelQuiz()}>
+                <button className="photo-cancel" type="button" disabled={recording} onClick={() => cancelQuiz()}>
                   Cancel
                 </button>
               ) : null}
               <button
                 className="photo-use"
                 type="button"
+                disabled={recording}
                 onClick={() => (recreating ? void onSend(draft || "recreate this", true) : quiz ? void finishQuizStep() : void usePickedPhotos())}
               >
                 {recreating ? "Recreate" : quiz ? quizButtonLabel(memory) : memory.chosenRefs.length ? "Next" : "Skip / None"}
@@ -1244,7 +1412,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. Frames: 1st photo first frame, 2nd photo last frame (2 max). Skip frames to pick up to 10 ref photos, 5 videos, and 5 audios together. Pose ref photos are for the prompt only — Wan does not get them. Cancel before generate to start the quiz over.</p>
+            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. Frames: 1st photo first frame, 2nd photo last frame (2 max). Skip frames to pick up to 10 ref photos, 5 videos, and 5 audios together. On audio, Speak records your voice in the app. Pose ref photos are for the prompt only — Wan does not get them. Cancel before generate to start the quiz over.</p>
           </div>
         ) : (
           memory.messages.map((message) => (
@@ -1407,6 +1575,15 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
           <div className="composer">
             <button className="composer-icon" type="button" onClick={() => void pickPhotos()} aria-label="Add file">
               +
+            </button>
+            <button
+              className={`composer-icon${recording ? " speaking" : ""}`}
+              type="button"
+              disabled={busy}
+              aria-label={recording ? "Stop recording" : "Speak"}
+              onClick={() => toggleSpeak()}
+            >
+              {recording ? "■" : "🎤"}
             </button>
             <textarea
               ref={inputRef}

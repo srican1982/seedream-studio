@@ -833,6 +833,23 @@ code { color: var(--accent-2); }
   font-size: 12px;
   line-height: 1;
 }
+.photo-speak {
+  flex: 0 0 auto;
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #111218;
+  color: #fff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 10px 12px;
+  white-space: nowrap;
+}
+.photo-speak.on {
+  border-color: #e24b4b;
+  background: #3a1418;
+  color: #ffd4d4;
+}
 .photo-cancel {
   flex: 0 0 auto;
   margin-left: auto;
@@ -857,6 +874,8 @@ code { color: var(--accent-2); }
   padding: 10px 12px;
   white-space: nowrap;
 }
+.photo-speak + .photo-cancel,
+.photo-speak + .photo-use,
 .photo-cancel + .photo-use {
   margin-left: 0;
 }
@@ -1102,7 +1121,7 @@ body.kb-open .composer textarea {
 }
 .composer {
   display: grid;
-  grid-template-columns: 40px 1fr auto;
+  grid-template-columns: 40px 40px 1fr auto;
   gap: 8px;
   align-items: end;
   background: var(--card);
@@ -1128,5 +1147,9 @@ body.kb-open .composer textarea {
   font-weight: 700;
 }
 .composer-icon { width: 40px; background: #111218; color: var(--muted); }
+.composer-icon.speaking {
+  background: #3a1418;
+  color: #ffd4d4;
+}
 .composer-send { padding: 0 14px; background: var(--accent); color: #fff; }
 .composer-send:disabled { opacity: 0.45; }

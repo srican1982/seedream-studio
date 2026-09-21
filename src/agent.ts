@@ -1401,7 +1401,7 @@ export function attachQuizQuestion(step: AttachQuizStep) {
     return "Question 3 — Ref video: tap 0–5 videos. Then Next or Skip.\n\n3 Ref video: වීඩියෝ 0–5. Skip හෝ Next.";
   }
   if (step === "audio") {
-    return "Question 4 — Ref audio: tap 0–5 sounds. Then Next or Skip.\n\n4 Ref audio: 0–5. Skip හෝ Next.";
+    return "Question 4 — Ref audio: tap 0–5 sounds, or Speak to record one. Then Next or Skip.\n\n4 Ref audio: 0–5. Speak හෝ Skip හෝ Next.";
   }
   if (step === "pose") {
     return "Pose ref: tap 0–5 pose photos. The planner looks at the pose and writes it in the text. Wan does not get these pictures.\n\nPose ref: පොස් පොටෝ 0–5. Wan එකට යන්නේ නැහැ. Skip හෝ Next.";

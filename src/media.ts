@@ -58,7 +58,7 @@ export function isVideoFile(file: File) {
 
 export function isAudioFile(file: File) {
   if (file.type.startsWith("audio/")) return true;
-  return /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(file.name);
+  return /\.(mp3|wav|m4a|aac|ogg|flac|webm)$/i.test(file.name);
 }
 
 export function isUsableReferenceImage(value: string) {
