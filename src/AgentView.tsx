@@ -62,7 +62,7 @@ import type { LocalImage, ResultKind, StudioResult } from "./types";
 
 const COMPOSER_MIN = 40;
 const COMPOSER_MAX = 200;
-const ATTACH_LIMIT = 20;
+const ATTACH_LIMIT = 25;
 const IMAGE_BYTES_MAX = 35_000_000;
 const MEDIA_BYTES_MAX = 120_000_000;
 
@@ -953,7 +953,9 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
           ? "Ref video"
           : memory.attachQuiz === "audio"
             ? "Ref audio"
-            : memory.attachQuiz === "size"
+            : memory.attachQuiz === "pose"
+              ? "Pose ref"
+              : memory.attachQuiz === "size"
               ? "Video size"
               : "";
 
@@ -1091,13 +1093,15 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                   ? "Tap a size below, or Skip / None."
                   : quiz
                     ? memory.attachQuiz === "frames"
-                      ? "Tap 1 photo = first frame, or 2 photos = first then last. That skips ref photos, video, and audio. Or Skip to ref photos. Cancel starts over."
+                      ? "Tap 1 photo = first frame, or 2 photos = first then last. That skips ref photos, video, and audio. Pose ref is still asked. Or Skip to ref photos. Cancel starts over."
                       : memory.attachQuiz === "people"
                         ? "Tap up to 10 ref photos, or Skip / None. Cancel starts over."
                         : memory.attachQuiz === "clip"
                           ? "Tap up to 5 ref videos, or Skip / None. Cancel starts over."
                           : memory.attachQuiz === "audio"
                             ? "Tap up to 5 ref audios, or Skip / None. Cancel starts over."
+                            : memory.attachQuiz === "pose"
+                              ? "Tap pose photos. Those are for the prompt only — Wan does not get them. Or Skip / None. Cancel starts over."
                             : "Attach files if you want, or tap Skip / None."
                     : "No photos yet. Attach some, or tap Skip / None."}
             </p>
@@ -1151,7 +1155,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
         {memory.messages.length === 0 ? (
           <div className="chat-empty">
             <p className="ask-title">Ask anything</p>
-            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. Frames: 1st photo first frame, 2nd photo last frame (2 max). Skip frames to pick up to 10 ref photos, 5 videos, and 5 audios together. Cancel before generate to start the quiz over.</p>
+            <p>Ask anything in Sinhala or English. Photos use Qwen 3.0 Pro. Video uses Wan 3.0 Prime. Frames: 1st photo first frame, 2nd photo last frame (2 max). Skip frames to pick up to 10 ref photos, 5 videos, and 5 audios together. Pose ref photos are for the prompt only — Wan does not get them. Cancel before generate to start the quiz over.</p>
           </div>
         ) : (
           memory.messages.map((message) => (

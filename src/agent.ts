@@ -138,8 +138,9 @@ export const WAN_FRAME_LIMIT = 2;
 export const WAN_REF_IMAGE_LIMIT = 10;
 export const WAN_REF_VIDEO_LIMIT = 5;
 export const WAN_REF_AUDIO_LIMIT = 5;
+export const WAN_POSE_REF_LIMIT = 5;
 
-export type AttachQuizStep = "" | "frames" | "people" | "clip" | "audio" | "size";
+export type AttachQuizStep = "" | "frames" | "people" | "clip" | "audio" | "pose" | "size";
 
 export type WanSizeOption = {
   id: string;
@@ -158,7 +159,7 @@ export const WAN_SIZE_OPTIONS: WanSizeOption[] = [
 ];
 
 function isQuizStep(value: string): value is Exclude<AttachQuizStep, ""> {
-  return value === "frames" || value === "people" || value === "clip" || value === "audio" || value === "size";
+  return value === "frames" || value === "people" || value === "clip" || value === "audio" || value === "pose" || value === "size";
 }
 
 export function defaultVideoSize(brief: string): WanSizeOption {
@@ -257,6 +258,7 @@ export type AgentMemory = {
   wanPeople: LocalImage[];
   wanClips: LocalImage[];
   wanAudios: LocalImage[];
+  wanPoseRefs: LocalImage[];
   wanDroppedClipAudio: boolean;
   wanSizeId: string;
   wanAspect: Aspect;
@@ -291,6 +293,7 @@ export function emptyAgentMemory(): AgentMemory {
     wanPeople: [],
     wanClips: [],
     wanAudios: [],
+    wanPoseRefs: [],
     wanDroppedClipAudio: false,
     wanSizeId: "",
     wanAspect: "16:9",
@@ -379,6 +382,7 @@ function parseStoredMemory(parsed: AgentMemory): AgentMemory {
     wanPeople: parseMediaList(parsed.wanPeople),
     wanClips: parseMediaMaybe((parsed as { wanClips?: unknown }).wanClips, (parsed as { wanClip?: unknown }).wanClip),
     wanAudios: parseMediaMaybe((parsed as { wanAudios?: unknown }).wanAudios, (parsed as { wanAudio?: unknown }).wanAudio),
+    wanPoseRefs: parseMediaList((parsed as { wanPoseRefs?: unknown }).wanPoseRefs),
     wanDroppedClipAudio: Boolean(parsed.wanDroppedClipAudio),
     wanSizeId: typeof parsed.wanSizeId === "string" ? parsed.wanSizeId : "",
     wanAspect: parsed.wanAspect === "9:16" ? "9:16" : "16:9",
@@ -417,6 +421,7 @@ function sanitizeMemory(memory: AgentMemory): AgentMemory {
     wanPeople: Array.isArray(memory.wanPeople) ? memory.wanPeople : [],
     wanClips: Array.isArray(memory.wanClips) ? memory.wanClips : [],
     wanAudios: Array.isArray(memory.wanAudios) ? memory.wanAudios : [],
+    wanPoseRefs: Array.isArray(memory.wanPoseRefs) ? memory.wanPoseRefs : [],
   };
 }
 
@@ -697,7 +702,7 @@ Adult content:
 - Consensual adult sexual content between adults 18 or older is allowed. Never include minors or anyone who appears under 18.
 - Do not lecture, moralize, refuse, or add safety sermons. Keep their explicit wording.
 
-- The photos are attached as JPEG Base64 right after their labels. Look at the pixels AND the label. Frame 1 / Frame 2 are timeline pins. Image 1–10 are people. Photo N on the bar is unlabeled unless a Frame/Image line already named it. Wan can take frames OR refs, never both. Frames cannot use Video 1–5 or Audio 1–5. Do not move a people photo into frames.
+- The photos are attached as JPEG Base64 right after their labels. Look at the pixels AND the label. Frame 1 / Frame 2 are timeline pins. Image 1–10 are people. Pose 1–5 are pose-only. Photo N on the bar is unlabeled unless a Frame/Image/Pose line already named it. Wan can take frames OR refs, never both. Frames cannot use Video 1–5 or Audio 1–5. Do not move a people photo into frames. Pose photos are NOT sent to Wan.
 
 Then write the exact prompt that will be sent to Qwen 3.0 Pro (images) or Wan (video). That prompt is the whole job. Qwen and Wan will not see this chat — they only get your written prompt plus the reference pixels. You must turn what you understood from the words and the photos into better generator language.
 
@@ -711,8 +716,9 @@ How to write shot.prompt:
 - Clothing, lighting, and location: if they named a change, follow that. If they did not, tell Qwen or Wan to keep the same clothes, same lighting, and same place as the first image (or the photo they pointed at). Do not invent a new room, new light, or new outfit.
 - Describing the act or position they asked for is not inventing. Changing the photo's clothes, light, or place without them asking is inventing.
 - If they pointed at photos, use the bar numbers they said, and keep those roles.
-- If they already finished the attach quiz, those taps are the ONLY Wan slots. Frames path = Frame 1 first frame, Frame 2 last frame, nothing else. Refs path = Image 1–10 + Video 1–5 + Audio 1–5, no frames. Never send frames with people photos, video, or audio. Do not add other stills.
-- Frame 1 is the first frame of the video. Frame 2 is the last frame. Image 1–10 are people references, not timeline pins. If frames exist, do not write Image 1, Video 1, or Audio 1.
+- If they already finished the attach quiz, those taps are the ONLY Wan slots. Frames path = Frame 1 first frame, Frame 2 last frame, nothing else. Refs path = Image 1–10 + Video 1–5 + Audio 1–5, no frames. Pose 1–5 are extra: you look at them and write the body pose into shot.prompt. Wan never receives Pose photos. Never send frames with people photos, video, or audio. Do not add other stills.
+- Frame 1 is the first frame of the video. Frame 2 is the last frame. Image 1–10 are people references, not timeline pins. Pose 1–5 are pose references only: take limb positions, facing, contact, and how they sit/stand/lie. Do not copy the Pose-photo person's face, hair, clothes, tattoos, jewelry, or identity into the video. The video people stay the Frame/Image/Video people. If frames exist, do not write Image 1, Video 1, or Audio 1.
+- If Pose 1–5 are attached, write that pose clearly in shot.prompt so Wan can follow it from text. Do not ask Wan to look at those pictures. If none, do not invent a pose file.
 - If Video 1–5 are attached, you cannot watch them. Still write motion to follow those videos. If Audio 1–5 are attached, you cannot hear them. Still write that the soundtrack follows those audios. If none, do not invent a file.
 - If they already picked photos in tap order for a still (not the Wan quiz), those are the ONLY references. refs must be attached. First tapped is the first image, second tapped is the second image. Do not add other stills.
 - If they name some photos for the people and other photos for poses, follow what they said. Do not assume photo 1 is people or photo 2 is pose unless they said that.
@@ -1324,7 +1330,7 @@ export function isQuizCancel(text: string) {
 
 export function attachQuizQuestion(step: AttachQuizStep) {
   if (step === "frames") {
-    return "Frames: tap 1 photo for the first frame, or 2 photos (first, then last). That skips ref photos, ref video, and ref audio — next is size.\n\nOr Skip to ref photos. Cancel starts over.\n\n1 Frames: 1st = first frame, 2nd = last frame. Refs skip.";
+    return "Frames: tap 1 photo for the first frame, or 2 photos (first, then last). That skips ref photos, ref video, and ref audio. Next is pose ref, then size.\n\nOr Skip to ref photos. Cancel starts over.\n\n1 Frames: 1st = first frame, 2nd = last frame. Refs skip. Pose ref still asked.";
   }
   if (step === "people") {
     return "Ref photos: tap 0–10 people photos. Then Next or Skip.\n\n2 Ref photos: පොටෝ 0–10. Skip හෝ Next.";
@@ -1334,6 +1340,9 @@ export function attachQuizQuestion(step: AttachQuizStep) {
   }
   if (step === "audio") {
     return "Question 4 — Ref audio: tap 0–5 sounds. Then Next or Skip.\n\n4 Ref audio: 0–5. Skip හෝ Next.";
+  }
+  if (step === "pose") {
+    return "Pose ref: tap 0–5 pose photos. The planner looks at the pose and writes it in the text. Wan does not get these pictures.\n\nPose ref: පොස් පොටෝ 0–5. Wan එකට යන්නේ නැහැ. Skip හෝ Next.";
   }
   if (step === "size") {
     return "Size: tap one chip — 480p / 720p / 1080p, landscape or vertical. The chip you tap is the size. Skip without tapping = 480p landscape.\n\nSize. Tap a chip. Skip only if you want 480p landscape.";
@@ -1346,13 +1355,14 @@ export function quizStepLimit(step: AttachQuizStep) {
   if (step === "people") return WAN_REF_IMAGE_LIMIT;
   if (step === "clip") return WAN_REF_VIDEO_LIMIT;
   if (step === "audio") return WAN_REF_AUDIO_LIMIT;
+  if (step === "pose") return WAN_POSE_REF_LIMIT;
   if (step === "size") return 1;
   return WAN_FRAME_LIMIT;
 }
 
 export function quizAccepts(step: AttachQuizStep, item: LocalImage) {
   const kind = mediaKindOf(item);
-  if (step === "frames" || step === "people") return kind === "image";
+  if (step === "frames" || step === "people" || step === "pose") return kind === "image";
   if (step === "clip") return kind === "video";
   if (step === "audio") return kind === "audio";
   return false;
@@ -1384,6 +1394,7 @@ export function beginAttachQuiz(memory: AgentMemory, attached: LocalImage[]): { 
     wanPeople: [],
     wanClips: [],
     wanAudios: [],
+    wanPoseRefs: [],
     wanDroppedClipAudio: false,
     wanSizeId: "",
     wanAspect: "16:9",
@@ -1401,6 +1412,7 @@ function applyQuizPicks(memory: AgentMemory): AgentMemory {
   if (memory.attachQuiz === "people") return { ...memory, wanPeople: picks.filter(isStillImage).slice(0, WAN_REF_IMAGE_LIMIT) };
   if (memory.attachQuiz === "clip") return { ...memory, wanClips: picks.filter((img) => mediaKindOf(img) === "video").slice(0, WAN_REF_VIDEO_LIMIT) };
   if (memory.attachQuiz === "audio") return { ...memory, wanAudios: picks.filter((img) => mediaKindOf(img) === "audio").slice(0, WAN_REF_AUDIO_LIMIT) };
+  if (memory.attachQuiz === "pose") return { ...memory, wanPoseRefs: picks.filter(isStillImage).slice(0, WAN_POSE_REF_LIMIT) };
   return memory;
 }
 
@@ -1411,6 +1423,11 @@ export function finishAttachQuiz(memory: AgentMemory): AgentMemory {
   let people = memory.wanPeople.filter(isStillImage).slice(0, WAN_REF_IMAGE_LIMIT);
   let clips = memory.wanClips.filter((img) => mediaKindOf(img) === "video").slice(0, WAN_REF_VIDEO_LIMIT);
   let audios = memory.wanAudios.filter((img) => mediaKindOf(img) === "audio").slice(0, WAN_REF_AUDIO_LIMIT);
+  const poses = memory.wanPoseRefs.filter(isStillImage).slice(0, WAN_POSE_REF_LIMIT);
+  const poseIds = new Set(poses.map((img) => img.id));
+  people = people.filter((img) => !poseIds.has(img.id));
+  clips = clips.filter((img) => !poseIds.has(img.id));
+  audios = audios.filter((img) => !poseIds.has(img.id));
   if (frames.length) {
     people = [];
     clips = [];
@@ -1435,6 +1452,7 @@ export function finishAttachQuiz(memory: AgentMemory): AgentMemory {
     wanPeople: people,
     wanClips: clips,
     wanAudios: audios,
+    wanPoseRefs: poses,
     wanDroppedClipAudio: false,
     wanSizeId: size.id,
     wanAspect: size.aspect,
@@ -1449,11 +1467,11 @@ export function advanceAttachQuiz(memory: AgentMemory): { memory: AgentMemory; d
   if (saved.attachQuiz === "frames") {
     if (saved.wanFrames.filter(isStillImage).length) {
       const count = saved.wanFrames.filter(isStillImage).length;
-      const next: AgentMemory = { ...saved, attachQuiz: "size", chosenRefs: [], wanPeople: [], wanClips: [], wanAudios: [] };
+      const next: AgentMemory = { ...saved, attachQuiz: "pose", chosenRefs: [], wanPeople: [], wanClips: [], wanAudios: [] };
       return {
         memory: next,
         done: false,
-        question: `Using your frames. ${count > 1 ? "First photo is the first frame, second photo is the last frame." : "That photo is the first frame."} Ref photos, video, and audio skipped.\n\n${attachQuizQuestion("size")}`,
+        question: `Using your frames. ${count > 1 ? "First photo is the first frame, second photo is the last frame." : "That photo is the first frame."} Ref photos, video, and audio skipped. Pose ref is next — Wan will not get those pictures.\n\n${attachQuizQuestion("pose")}`,
         dropped: false,
       };
     }
@@ -1469,6 +1487,10 @@ export function advanceAttachQuiz(memory: AgentMemory): { memory: AgentMemory; d
     return { memory: next, done: false, question: attachQuizQuestion("audio"), dropped: false };
   }
   if (saved.attachQuiz === "audio") {
+    const next: AgentMemory = { ...saved, attachQuiz: "pose", chosenRefs: [] };
+    return { memory: next, done: false, question: attachQuizQuestion("pose"), dropped: false };
+  }
+  if (saved.attachQuiz === "pose") {
     const next: AgentMemory = { ...saved, attachQuiz: "size", chosenRefs: [] };
     return { memory: next, done: false, question: attachQuizQuestion("size"), dropped: false };
   }
@@ -1573,12 +1595,13 @@ async function plannerAttachQuiz(memory: AgentMemory, library: LibraryPhoto[]): 
   const parts: ChatContentPart[] = [];
   const frames = memory.wanFrames.filter(isStillImage);
   const people = memory.wanPeople.filter(isStillImage);
-  const used = new Set([...frames, ...people].map((img) => img.id));
+  const poses = memory.wanPoseRefs.filter(isStillImage);
+  const used = new Set([...frames, ...people, ...poses].map((img) => img.id));
   parts.push({
     type: "text",
     text: frames.length
-      ? "Wan frames path: Frame 1 is first frame, Frame 2 is last frame. No people photos, no Video 1–5, no Audio 1–5. Do not write Image 1."
-      : "Wan refs path: no frames. Image 1–10, Video 1–5, and Audio 1–5 can all go together. Do not invent frames.",
+      ? "Wan frames path: Frame 1 is first frame, Frame 2 is last frame. No people photos, no Video 1–5, no Audio 1–5. Do not write Image 1. Pose refs are prompt-only."
+      : "Wan refs path: no frames. Image 1–10, Video 1–5, and Audio 1–5 can all go together. Pose refs are prompt-only. Do not invent frames.",
   });
   if (!frames.length) {
     parts.push({ type: "text", text: "No frame images. Do not invent first or last frames from other photos." });
@@ -1600,7 +1623,23 @@ async function plannerAttachQuiz(memory: AgentMemory, library: LibraryPhoto[]): 
     for (const [index, img] of people.entries()) {
       parts.push(
         ...(await labeledStill(
-          `Image ${index + 1} (${barLabelFor(library, img)}) — reference / people. Same face and body. Not a timeline pin.`,
+          `Image ${index + 1} (${barLabelFor(library, img)}) — reference / people. Same face and body. Not a timeline pin. Not a pose ref.`,
+          img,
+          true
+        ))
+      );
+    }
+  }
+  if (!poses.length) {
+    parts.push({
+      type: "text",
+      text: "No pose refs. Do not invent a pose photo. Write pose only from their words.",
+    });
+  } else {
+    for (const [index, img] of poses.entries()) {
+      parts.push(
+        ...(await labeledStill(
+          `Pose ${index + 1} (${barLabelFor(library, img)}) — pose only. Look at limb positions, facing, contact, sit/stand/lie. Write that pose in shot.prompt. Wan will NOT receive this picture. Do not use this person's face, hair, clothes, tattoos, or identity. Not Image ${index + 1}. Not a frame.`,
           img,
           true
         ))
@@ -1611,7 +1650,7 @@ async function plannerAttachQuiz(memory: AgentMemory, library: LibraryPhoto[]): 
     if (photo.mediaKind !== "image" || used.has(photo.id)) continue;
     parts.push(
       ...(await labeledStill(
-        `Photo ${photo.label} on the bar — look at this. It is not assigned as a Frame or Image slot. Do not send it to Wan as a frame or people ref.`,
+        `Photo ${photo.label} on the bar — look at this. It is not assigned as a Frame, Image, or Pose slot. Do not send it to Wan as a frame or people ref.`,
         photo.image
       ))
     );
@@ -1688,6 +1727,7 @@ export function photoLibrary(memory: AgentMemory, extra: LocalImage[] = []): Lib
   }
   for (const img of memory.wanFrames) add(img, "upload");
   for (const img of memory.wanPeople) add(img, "upload");
+  for (const img of memory.wanPoseRefs) add(img, "upload");
   for (const img of memory.wanClips) add(img, "upload");
   for (const img of memory.wanAudios) add(img, "upload");
   return out;
@@ -1703,6 +1743,7 @@ export function removeLibraryPhoto(memory: AgentMemory, id: string): AgentMemory
     chosenRefs: drop(memory.chosenRefs),
     wanFrames: drop(memory.wanFrames),
     wanPeople: drop(memory.wanPeople),
+    wanPoseRefs: drop(memory.wanPoseRefs),
     wanClips: drop(memory.wanClips),
     wanAudios: drop(memory.wanAudios),
     lastStill: memory.lastStill?.id === id ? null : memory.lastStill,
@@ -1730,6 +1771,7 @@ function imagesFromIds(memory: AgentMemory, ids: string[]) {
     ...memory.chosenRefs,
     ...memory.wanFrames,
     ...memory.wanPeople,
+    ...memory.wanPoseRefs,
     ...memory.userRefs,
     ...memory.images,
     ...memory.createdStills,
@@ -1828,7 +1870,7 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
   const namedPeople = peopleInText(`${brief}\n${memory.notes}\n${history}`);
   const personIds = [...new Set([...memory.personIds, ...namedPeople.map((person) => person.id), ...peopleForMemory(memory).map((person) => person.id)])];
   const savedPacks = getPeople().filter((person) => personIds.includes(person.id));
-  const quizIds = new Set([...memory.wanFrames, ...memory.wanPeople].map((img) => img.id));
+  const quizIds = new Set([...memory.wanFrames, ...memory.wanPeople, ...memory.wanPoseRefs].map((img) => img.id));
   const personParts: ChatContentPart[] = [];
   for (const person of savedPacks) {
     for (const photo of person.photos.slice(0, 3)) {
@@ -1844,7 +1886,9 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
     if (personParts.filter((part) => part.type === "image_url").length >= 6) break;
   }
   const needPixels = quiz
-    ? memory.wanFrames.filter(isStillImage).length + memory.wanPeople.filter(isStillImage).length
+    ? memory.wanFrames.filter(isStillImage).length +
+      memory.wanPeople.filter(isStillImage).length +
+      memory.wanPoseRefs.filter(isStillImage).length
     : picked
       ? userRefs.filter(isStillImage).length
       : library.filter((photo) => photo.mediaKind === "image").length;
@@ -1873,6 +1917,9 @@ export async function planAgentJob(memory: AgentMemory): Promise<{ lock: AgentLo
             : memory.wanAudios.length
               ? `${memory.wanAudios.length} reference audio(s) as Audio 1, Audio 2, … (unheard).`
               : "No reference audio.",
+          memory.wanPoseRefs.length
+            ? `${memory.wanPoseRefs.length} pose ref(s) as Pose 1, Pose 2, … Look at the pose only and write it in shot.prompt. Wan will not receive these pictures.`
+            : "No pose refs.",
           `LOCKED output size: ${videoSizeFromMemory(memory, brief).label} (${videoSizeFromMemory(memory, brief).aspect} ${videoSizeFromMemory(memory, brief).resolution}). Write this size only. Do not write 480p landscape unless this line is 480p landscape.`,
           "Wan frames = first/last only. Wan refs = pictures + video + audio together. Never mix the two paths.",
         ].join(" ")
@@ -2103,7 +2150,11 @@ function refsForShot(memory: AgentMemory, shot: AgentShot) {
     return combined.slice(0, Math.max(1, max));
   }
   if (memory.wanQuizDone && shot.kind === "video") {
-    return imagesFromIds(memory, shot.wanPeopleIds).filter(isStillImage).slice(0, max);
+    const poseIds = new Set(memory.wanPoseRefs.map((img) => img.id));
+    return imagesFromIds(memory, shot.wanPeopleIds)
+      .filter(isStillImage)
+      .filter((img) => !poseIds.has(img.id))
+      .slice(0, max);
   }
   if (memory.hasPickedVideoRefs) {
     return withPersonRefs(
@@ -2327,8 +2378,9 @@ export async function runAgentShot(
   if (!shot) throw new Error("Shot missing.");
   const images = refsForShot(memory, shot);
   const prompt = shotPrompt(memory.lock, memory.notes, shot, memory.brief);
+  const poseIds = new Set(memory.wanPoseRefs.map((img) => img.id));
   const quizFrames = imagesFromIds(memory, shot.wanFrameIds).filter(isStillImage);
-  const quizPeople = imagesFromIds(memory, shot.wanPeopleIds).filter(isStillImage);
+  const quizPeople = imagesFromIds(memory, shot.wanPeopleIds).filter(isStillImage).filter((img) => !poseIds.has(img.id));
   const quizClips = (shot.wanClipIds.length ? imagesFromIds(memory, shot.wanClipIds) : memory.wanClips).filter(
     (img) => mediaKindOf(img) === "video"
   );
