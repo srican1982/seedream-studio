@@ -183,8 +183,8 @@ export async function persistNativeResult(result: {
   try {
     const downloaded = await Filesystem.downloadFile({
       url: result.url,
-      path: safeName(result.filename),
-      directory: Directory.Cache,
+      path: `ai-story/${safeName(result.filename)}`,
+      directory: Directory.Data,
       recursive: true,
     });
     if (!downloaded.path) return { url: result.url, uuid: result.uuid };

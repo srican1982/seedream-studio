@@ -59,7 +59,7 @@ import {
   type AgentShot,
   type LibraryPhoto,
 } from "./agent";
-import { downloadResult } from "./api";
+import { downloadResult, resultPlayUrl } from "./api";
 import { withKeepAlive } from "./keep-alive";
 import { fileToDataUri, isAudioFile, isImageFile, isImagePreview, isVideoFile, uuid, videoPosterDataUri } from "./media";
 import { forgetPerson, getPeople, loadPeople, peopleNames, savePerson } from "./people-store";
@@ -1486,7 +1486,7 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                     onClick={() =>
                       openMedia({
                         kind: message.result!.kind,
-                        url: message.result!.url,
+                        url: resultPlayUrl(message.result!),
                         alt: message.result!.kind === "video" ? "Generated video" : "Generated shot",
                       })
                     }
@@ -1495,15 +1495,15 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                       event.preventDefault();
                       openMedia({
                         kind: message.result!.kind,
-                        url: message.result!.url,
+                        url: resultPlayUrl(message.result!),
                         alt: message.result!.kind === "video" ? "Generated video" : "Generated shot",
                       });
                     }}
                   >
                     {message.result.kind === "video" ? (
-                      <video src={message.result.url} muted playsInline preload="metadata" />
+                      <video src={resultPlayUrl(message.result)} muted playsInline preload="metadata" />
                     ) : (
-                      <img src={message.result.url} alt="Generated shot" />
+                      <img src={resultPlayUrl(message.result)} alt="Generated shot" />
                     )}
                   </div>
                   <div className="bubble-actions">

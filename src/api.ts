@@ -884,6 +884,13 @@ async function toStudioResult(
   };
 }
 
+export function resultPlayUrl(result: StudioResult) {
+  const play = result.url?.trim() || "";
+  if (play && !/^https?:\/\//i.test(play)) return play;
+  if (result.localPath && isNativeApp()) return Capacitor.convertFileSrc(result.localPath);
+  return play || result.remoteUrl || "";
+}
+
 export async function downloadResult(result: StudioResult) {
   if (isNativeApp()) {
     const source = result.localPath || result.remoteUrl || result.url;

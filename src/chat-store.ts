@@ -3,7 +3,15 @@ const STORE = "chats";
 
 type ChatBlob = Record<string, unknown>;
 type ImageBlob = { id?: string; name?: string; preview?: string; dataUri?: string };
-type ResultBlob = { url?: string; remoteUrl?: string };
+type ResultBlob = { url?: string; remoteUrl?: string; localPath?: string };
+
+function isRemoteUrl(value: string) {
+  return /^https?:\/\//i.test(value);
+}
+
+function isLocalPlaybackUrl(value: string) {
+  return Boolean(value) && !isRemoteUrl(value);
+}
 
 const memoryCache = new Map<string, ChatBlob>();
 
@@ -27,9 +35,22 @@ function shrinkImage(img: ImageBlob, dropBytes: boolean): ImageBlob {
 
 function shrinkResult(result: ResultBlob | undefined) {
   if (!result) return undefined;
-  const url = result.remoteUrl && /^https?:/i.test(result.remoteUrl) ? result.remoteUrl : result.url || "";
-  if (url.startsWith("data:")) return { ...result, url: result.remoteUrl || "" };
-  return { ...result, url };
+  const remote = result.remoteUrl?.trim() || "";
+  const localPath = result.localPath?.trim() || "";
+  const play = result.url?.trim() || "";
+  if (play.startsWith("data:")) {
+    return { ...result, url: play, remoteUrl: undefined, localPath: localPath || undefined };
+  }
+  if (localPath || isLocalPlaybackUrl(play)) {
+    return {
+      ...result,
+      url: play,
+      localPath,
+      remoteUrl: isRemoteUrl(remote) ? remote : undefined,
+    };
+  }
+  const url = isRemoteUrl(remote) ? remote : play;
+  return { ...result, url, remoteUrl: isRemoteUrl(remote) ? remote : undefined };
 }
 
 function slimMemory(memory: ChatBlob, dropBytes: boolean): ChatBlob {

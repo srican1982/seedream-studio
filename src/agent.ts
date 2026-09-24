@@ -1,5 +1,5 @@
 import { CapacitorHttp } from "@capacitor/core";
-import { brainFromText, completeChat, generateImage, generateVideo, loadBrainModel, saveBrainModel, type ChatContentPart } from "./api";
+import { brainFromText, completeChat, generateImage, generateVideo, loadBrainModel, resultPlayUrl, saveBrainModel, type ChatContentPart } from "./api";
 import { cacheChat, cachedChat, dropCachedChat, idbDeleteChat, idbReadChat, idbWriteChat, readLocalChat, writeLocalChat } from "./chat-store";
 import { getPeople, loadPeople, peopleNames, type PersonPack } from "./people-store";
 import { blobToJpegDataUri, isUsableMediaUrl, isUsableReferenceImage, uuid } from "./media";
@@ -1783,8 +1783,8 @@ export function photoLibrary(memory: AgentMemory, extra: LocalImage[] = []): Lib
         {
           id: `clip-${shot.id}`,
           name: shot.title || "clip",
-          preview: shot.result.url,
-          dataUri: shot.result.url,
+          preview: resultPlayUrl(shot.result),
+          dataUri: resultPlayUrl(shot.result),
           mediaKind: "video",
         },
         "made"
@@ -2322,10 +2322,10 @@ async function sourceToJpegDataUri(source: string): Promise<string | null> {
 
 export async function resultToStill(result: StudioResult): Promise<LocalImage | null> {
   if (result.kind !== "image") {
-    const frames = await captureVideoFrames(result.url);
+    const frames = await captureVideoFrames(resultPlayUrl(result));
     return frames.end || frames.start;
   }
-  const sources = [result.remoteUrl, result.url, result.localPath].filter((item): item is string => Boolean(item));
+  const sources = [resultPlayUrl(result), result.localPath, result.remoteUrl, result.url].filter((item): item is string => Boolean(item));
   for (const source of sources) {
     try {
       const dataUri = await sourceToJpegDataUri(source);
@@ -2514,7 +2514,7 @@ export async function runAgentShot(
       : await generateVideo(videoModel, state, onProgress);
 
   const still = result.kind === "image" ? await resultToStill(result) : null;
-  const clipFrames = result.kind === "video" ? await captureVideoFrames(result.url) : { start: null, end: null };
+  const clipFrames = result.kind === "video" ? await captureVideoFrames(resultPlayUrl(result)) : { start: null, end: null };
   const clipEnd = clipFrames.end || clipFrames.start;
   return {
     ...memory,
