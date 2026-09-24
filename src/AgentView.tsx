@@ -120,9 +120,10 @@ function StopIcon() {
 type AgentViewProps = {
   chatsOpen?: boolean;
   onChatsOpenChange?: (open: boolean) => void;
+  onOpenRunwareCleanup?: () => void;
 };
 
-export default function AgentView({ chatsOpen = false, onChatsOpenChange }: AgentViewProps) {
+export default function AgentView({ chatsOpen = false, onChatsOpenChange, onOpenRunwareCleanup }: AgentViewProps) {
   const [memory, setMemory] = useState<AgentMemory>(emptyAgentMemory);
   const [chats, setChats] = useState<AgentChatInfo[]>([]);
   const [chatId, setChatId] = useState("");
@@ -1262,6 +1263,11 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                   : ""}
         </span>
         <span className="chat-toolbar-actions">
+          {onOpenRunwareCleanup ? (
+            <button className="link" type="button" disabled={busy || recording} onClick={() => onOpenRunwareCleanup()}>
+              Runware server
+            </button>
+          ) : null}
           {library.some((photo) => photo.kind === "upload") || pending.length ? (
             <button className="link" type="button" disabled={busy || recording} onClick={() => clearFiles()}>
               Clear files

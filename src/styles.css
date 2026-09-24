@@ -450,6 +450,10 @@ select, .sheet input {
   padding: 20px 16px calc(20px + env(safe-area-inset-bottom));
   display: grid;
   gap: 10px;
+  max-height: min(92dvh, 720px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 .sheet-card h2 { margin: 0; }
 .sheet-card p { margin: 0; color: var(--muted); font-size: 0.85rem; }
@@ -478,6 +482,7 @@ select, .sheet input {
 }
 .sheet-note { line-height: 1.45; }
 .sheet-status { color: var(--accent-2); font-size: 0.82rem; }
+.sheet-build { margin: 0; color: var(--muted); font-size: 0.72rem; text-align: center; }
 code { color: var(--accent-2); }
 
 .ghost-btn {

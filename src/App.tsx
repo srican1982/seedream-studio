@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+declare const __APP_BUILD__: string;
 import {
   checkHealth,
   ensureDeviceConfig,
@@ -20,6 +21,24 @@ export default function App() {
   const [runwarePurgeDraft, setRunwarePurgeDraft] = useState("");
   const [runwarePurgeStatus, setRunwarePurgeStatus] = useState("");
   const [runwarePurgeBusy, setRunwarePurgeBusy] = useState(false);
+  const [runwarePurgeFocus, setRunwarePurgeFocus] = useState(false);
+  const runwarePurgeRef = useRef<HTMLTextAreaElement>(null);
+
+  const appBuildLabel =
+    typeof __APP_BUILD__ === "string" && __APP_BUILD__ !== "dev" ? __APP_BUILD__.slice(0, 7) : "dev";
+
+  function openSettings(runware = false) {
+    setRunwarePurgeFocus(runware);
+    setSettingsOpen(true);
+  }
+
+  useEffect(() => {
+    if (!settingsOpen || !runwarePurgeFocus) return;
+    const scroll = () => runwarePurgeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    requestAnimationFrame(scroll);
+    const t = window.setTimeout(scroll, 120);
+    return () => window.clearTimeout(t);
+  }, [settingsOpen, runwarePurgeFocus]);
 
   useEffect(() => {
     void (async () => {
@@ -71,14 +90,14 @@ export default function App() {
             <i />
             {health.configured ? "API Online" : "API Key"}
           </span>
-          <button className="icon-btn" onClick={() => setSettingsOpen(true)} aria-label="Settings">
+          <button className="icon-btn" onClick={() => openSettings(false)} aria-label="Settings">
             <Gear />
           </button>
         </div>
       </header>
 
       <div className="scroll chat-mode">
-        <AgentView chatsOpen={chatsOpen} onChatsOpenChange={setChatsOpen} />
+        <AgentView chatsOpen={chatsOpen} onChatsOpenChange={setChatsOpen} onOpenRunwareCleanup={() => openSettings(true)} />
       </div>
 
       {settingsOpen && (
@@ -114,30 +133,15 @@ export default function App() {
               placeholder="sk-or-v1-..."
               onChange={(e) => setGrokDraft(e.target.value)}
             />
-            <button type="submit">Save</button>
-            <button
-              type="button"
-              className="ghost"
-              onClick={() => {
-                saveApiKey("");
-                saveOpenRouterKey("");
-                setKeyDraft("");
-                setGrokDraft("");
-                setSettingsOpen(false);
-                void checkHealth().then(setHealth);
-              }}
-            >
-              Clear device keys
-            </button>
             <hr className="sheet-divider" />
-            <h3>Runware server photos</h3>
+            <h3 id="runware-server-photos">Delete photos on Runware server</h3>
             <p className="sheet-note">
-              Runware does not offer a full library delete. Removal needs each file&apos;s ID (in the link on their site, or copied from a{" "}
-              <code>mm.runware.ai/.../id/…</code> URL). New Wan uploads are deleted automatically after each video.
+              Paste links from Runware&apos;s site (<code>mm.runware.ai/.../id/…</code>) or the file UUID, one per line. New Wan uploads are removed automatically after each video.
             </p>
-            <label htmlFor="runware-purge">Paste Runware links or IDs (optional)</label>
+            <label htmlFor="runware-purge">Paste Runware links or IDs here</label>
             <textarea
               id="runware-purge"
+              ref={runwarePurgeRef}
               rows={3}
               placeholder="https://mm.runware.ai/media-storage/.../id/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
               value={runwarePurgeDraft}
@@ -167,6 +171,22 @@ export default function App() {
               {runwarePurgeBusy ? "Deleting…" : "Delete Runware copies this phone knows"}
             </button>
             {runwarePurgeStatus ? <p className="sheet-status">{runwarePurgeStatus}</p> : null}
+            <button type="submit">Save API keys</button>
+            <button
+              type="button"
+              className="ghost"
+              onClick={() => {
+                saveApiKey("");
+                saveOpenRouterKey("");
+                setKeyDraft("");
+                setGrokDraft("");
+                setSettingsOpen(false);
+                void checkHealth().then(setHealth);
+              }}
+            >
+              Clear device keys
+            </button>
+            <p className="sheet-build">App build {appBuildLabel}</p>
           </form>
         </div>
       )}
