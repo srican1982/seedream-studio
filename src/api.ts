@@ -850,7 +850,8 @@ async function toStudioResult(
   finished: FinishedTask
 ): Promise<StudioResult> {
   const media = resultUrl(finished.row);
-  scheduleWipe([...finished.wipeIds, media.uuid]);
+  const outputIds = new Set([media.uuid, uuidFromMediaUrl(media.url)].filter(Boolean));
+  scheduleWipe(finished.wipeIds.filter((id) => id && !outputIds.has(id)));
   const ext =
     kind === "video"
       ? state.videoFormat.toLowerCase()

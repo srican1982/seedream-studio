@@ -1817,6 +1817,21 @@ export function removeLibraryPhoto(memory: AgentMemory, id: string): AgentMemory
   };
 }
 
+export function clearUserFiles(memory: AgentMemory): AgentMemory {
+  return {
+    ...memory,
+    images: [],
+    userRefs: [],
+    chosenRefs: [],
+    wanFrames: [],
+    wanPeople: [],
+    wanPoseRefs: [],
+    wanClips: [],
+    wanAudios: [],
+    messages: memory.messages.map((msg) => ({ ...msg, images: undefined })),
+  };
+}
+
 function numsFromUnknown(value: unknown, max: number) {
   const raw = Array.isArray(value) ? value : value == null || value === "" ? [] : [value];
   const out: number[] = [];

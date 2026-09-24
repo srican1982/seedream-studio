@@ -44,6 +44,7 @@ import {
   recreateRefLimit,
   recreateShot,
   removeLibraryPhoto,
+  clearUserFiles,
   resultToStill,
   runAgentShot,
   saveAgentMemory,
@@ -761,6 +762,12 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
     commit(removeLibraryPhoto(memoryRef.current, id));
   }
 
+  function clearFiles() {
+    if (busy || recording) return;
+    setPending([]);
+    commit(clearUserFiles(memoryRef.current));
+  }
+
   function trainSavedText(name: string, count: number) {
     return `Saved ${name} with ${count} photo${count === 1 ? "" : "s"}. The next clip starts on the last frame so it stays this ${name}. If you ask them to turn, I paint that same person onto that place first — bedroom photos never become a second location.`;
   }
@@ -1254,16 +1261,23 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                   ? "Files"
                   : ""}
         </span>
-        <button
-          className="link"
-          type="button"
-          disabled={busy}
-          onClick={() => {
-            void startNewAgentChat(memoryRef.current).then((next) => showChat(next));
-          }}
-        >
-          New chat
-        </button>
+        <span className="chat-toolbar-actions">
+          {library.some((photo) => photo.kind === "upload") || pending.length ? (
+            <button className="link" type="button" disabled={busy || recording} onClick={() => clearFiles()}>
+              Clear files
+            </button>
+          ) : null}
+          <button
+            className="link"
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              void startNewAgentChat(memoryRef.current).then((next) => showChat(next));
+            }}
+          >
+            New chat
+          </button>
+        </span>
       </div>
 
       {chatsOpen ? (
@@ -1337,14 +1351,16 @@ export default function AgentView({ chatsOpen = false, onChatsOpenChange }: Agen
                       {photo.mediaKind === "video" ? "Clip" : photo.mediaKind === "audio" ? "Sound" : photo.kind === "made" ? "Made" : "Yours"}
                     </span>
                     {order >= 0 ? <span className="photo-bar-order">{order + 1}</span> : null}
-                    <button
-                      type="button"
-                      className="photo-bar-del"
-                      aria-label="Delete file"
-                      onClick={() => deleteLibraryPhoto(photo.id)}
-                    >
-                      ×
-                    </button>
+                    {photo.id.startsWith("clip-") ? null : (
+                      <button
+                        type="button"
+                        className="photo-bar-del"
+                        aria-label="Delete file"
+                        onClick={() => deleteLibraryPhoto(photo.id)}
+                      >
+                        ×
+                      </button>
+                    )}
                   </div>
                 );
               })}
