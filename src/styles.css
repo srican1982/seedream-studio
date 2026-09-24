@@ -462,6 +462,22 @@ select, .sheet input {
   font-weight: 700;
 }
 .sheet-card .ghost { background: transparent; color: var(--muted); }
+.sheet-card h3 { margin: 4px 0 0; font-size: 0.95rem; }
+.sheet-divider { border: 0; border-top: 1px solid var(--line); margin: 8px 0 0; }
+.sheet-card textarea {
+  width: 100%;
+  min-height: 72px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: #111218;
+  color: #fff;
+  padding: 10px;
+  font: inherit;
+  font-size: 0.82rem;
+  resize: vertical;
+}
+.sheet-note { line-height: 1.45; }
+.sheet-status { color: var(--accent-2); font-size: 0.82rem; }
 code { color: var(--accent-2); }
 
 .ghost-btn {

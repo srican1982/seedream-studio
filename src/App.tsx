@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { checkHealth, ensureDeviceConfig, hasLocalApiKey, hasLocalOpenRouterKey, saveApiKey, saveOpenRouterKey, type Health } from "./api";
+import {
+  checkHealth,
+  ensureDeviceConfig,
+  hasLocalApiKey,
+  hasLocalOpenRouterKey,
+  purgeRunwareServerCopies,
+  saveApiKey,
+  saveOpenRouterKey,
+  type Health,
+} from "./api";
 import AgentView from "./AgentView";
 
 export default function App() {
@@ -8,6 +17,9 @@ export default function App() {
   const [chatsOpen, setChatsOpen] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
   const [grokDraft, setGrokDraft] = useState("");
+  const [runwarePurgeDraft, setRunwarePurgeDraft] = useState("");
+  const [runwarePurgeStatus, setRunwarePurgeStatus] = useState("");
+  const [runwarePurgeBusy, setRunwarePurgeBusy] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -117,6 +129,44 @@ export default function App() {
             >
               Clear device keys
             </button>
+            <hr className="sheet-divider" />
+            <h3>Runware server photos</h3>
+            <p className="sheet-note">
+              Runware does not offer a full library delete. Removal needs each file&apos;s ID (in the link on their site, or copied from a{" "}
+              <code>mm.runware.ai/.../id/…</code> URL). New Wan uploads are deleted automatically after each video.
+            </p>
+            <label htmlFor="runware-purge">Paste Runware links or IDs (optional)</label>
+            <textarea
+              id="runware-purge"
+              rows={3}
+              placeholder="https://mm.runware.ai/media-storage/.../id/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              value={runwarePurgeDraft}
+              onChange={(e) => setRunwarePurgeDraft(e.target.value)}
+            />
+            <button
+              type="button"
+              className="ghost"
+              disabled={runwarePurgeBusy || !health.configured}
+              onClick={() => {
+                setRunwarePurgeBusy(true);
+                setRunwarePurgeStatus("");
+                void purgeRunwareServerCopies(runwarePurgeDraft)
+                  .then(({ requested, removed }) => {
+                    setRunwarePurgeStatus(
+                      requested
+                        ? `Sent delete for ${requested} file${requested === 1 ? "" : "s"} (${removed} accepted by Runware).`
+                        : "No Runware file IDs found on this phone. Paste links from the Runware site above, or open a photo there and copy its URL."
+                    );
+                  })
+                  .catch((error) => {
+                    setRunwarePurgeStatus(error instanceof Error ? error.message : "Could not delete Runware files.");
+                  })
+                  .finally(() => setRunwarePurgeBusy(false));
+              }}
+            >
+              {runwarePurgeBusy ? "Deleting…" : "Delete Runware copies this phone knows"}
+            </button>
+            {runwarePurgeStatus ? <p className="sheet-status">{runwarePurgeStatus}</p> : null}
           </form>
         </div>
       )}

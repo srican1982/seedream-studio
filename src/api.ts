@@ -12,6 +12,12 @@ import {
   wanSize,
 } from "./models";
 import { ensureWanAudioDataUri, fileToDataUri, fitImageDataUriToAspect, isImageFile, isUsableMediaUrl, isUsableReferenceImage, uuid } from "./media";
+import {
+  collectRunwareIdsOnDevice,
+  forgetTrackedRunwareUploads,
+  parseRunwareIdsFromUserInput,
+  rememberRunwareUploads,
+} from "./runware-tracker";
 import { nativePollRunware, nativeSleep, withKeepAlive } from "./keep-alive";
 import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
@@ -298,9 +304,18 @@ async function uploadRunwareMedia(media: string): Promise<string> {
   const row = payload.data?.[0] || {};
   const url = String(row.mediaURL || "");
   const id = String(row.mediaUUID || "");
-  if (/^https?:\/\//i.test(url)) return url;
-  if (id) return id;
-  if (url) return url;
+  if (/^https?:\/\//i.test(url)) {
+    rememberRunwareUploads(collectUploadedRunwareIds([url, id]));
+    return url;
+  }
+  if (id) {
+    rememberRunwareUploads(collectUploadedRunwareIds([id]));
+    return id;
+  }
+  if (url) {
+    rememberRunwareUploads(collectUploadedRunwareIds([url]));
+    return url;
+  }
   throw new Error("Could not upload the file.");
 }
 
@@ -330,7 +345,10 @@ async function uploadRunwareImage(image: string): Promise<string> {
     if (!payload.errors?.length) {
       const row = payload.data?.[0] || {};
       const uploaded = hostedWanImage(String(row.imageURL || row.imageUUID || ""));
-      if (uploaded) return uploaded;
+      if (uploaded) {
+        rememberRunwareUploads(collectUploadedRunwareIds([uploaded, String(row.imageUUID || ""), String(row.imageURL || "")]));
+        return uploaded;
+      }
     }
   } catch {
     /* mediaStorage next */
@@ -372,10 +390,12 @@ function collectUploadedRunwareIds(values: string[]) {
 }
 
 function wipeUploadedInputs(ids: string[]) {
-  for (const id of [...new Set(ids.filter(Boolean))]) {
+  const unique = [...new Set(ids.filter(Boolean))];
+  for (const id of unique) {
     void deleteMedia(id);
     scheduleWipe([id]);
   }
+  if (unique.length) forgetTrackedRunwareUploads(unique);
 }
 
 function collectWipeIds(rows: Array<Record<string, unknown>>) {
@@ -477,10 +497,10 @@ function resultUrl(row: Record<string, unknown>): { url: string; uuid?: string; 
   throw new Error("Runware returned no media.");
 }
 
-export async function deleteMedia(mediaUUID: string) {
-  if (!mediaUUID) return;
+export async function deleteMedia(mediaUUID: string): Promise<boolean> {
+  if (!mediaUUID) return false;
   try {
-    await postRunware([
+    const payload = await postRunware([
       {
         taskType: "mediaStorage",
         taskUUID: uuid(),
@@ -488,9 +508,22 @@ export async function deleteMedia(mediaUUID: string) {
         media: mediaUUID,
       },
     ]);
+    return !payload.errors?.length;
   } catch {
-    /* TTL 60s still wipes it */
+    return false;
   }
+}
+
+/** Delete Runware server copies we can identify (tracked uploads, chat URLs, pasted links). */
+export async function purgeRunwareServerCopies(extraIdsRaw = "") {
+  const ids = new Set(await collectRunwareIdsOnDevice());
+  for (const id of parseRunwareIdsFromUserInput(extraIdsRaw)) ids.add(id);
+  let removed = 0;
+  for (const id of ids) {
+    if (await deleteMedia(id)) removed += 1;
+  }
+  forgetTrackedRunwareUploads([...ids]);
+  return { requested: ids.size, removed };
 }
 
 export type ChatContentPart =
