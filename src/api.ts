@@ -355,6 +355,29 @@ function uuidFromMediaUrl(url: string) {
   return /([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i.exec(url)?.[1];
 }
 
+/** Runware media UUIDs returned right after this app uploaded inputs (not inline data URIs). */
+function collectUploadedRunwareIds(values: string[]) {
+  const ids = new Set<string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.startsWith("data:")) continue;
+    if (isRunwareId(trimmed)) {
+      ids.add(trimmed);
+      continue;
+    }
+    const fromUrl = uuidFromMediaUrl(trimmed);
+    if (fromUrl) ids.add(fromUrl);
+  }
+  return [...ids];
+}
+
+function wipeUploadedInputs(ids: string[]) {
+  for (const id of [...new Set(ids.filter(Boolean))]) {
+    void deleteMedia(id);
+    scheduleWipe([id]);
+  }
+}
+
 function collectWipeIds(rows: Array<Record<string, unknown>>) {
   const ids = new Set<string>();
   for (const row of rows) {
@@ -779,6 +802,7 @@ export async function generateVideo(
     deliveryMethod: "async",
   };
 
+  const uploadedInputIds: string[] = [];
   if (VIDEO_WAN_MODELS.includes(tab)) {
     const stillSrc = (img: { dataUri?: string; preview?: string }) => img.dataUri || img.preview || "";
     const frames = (state.wanFrames || [])
@@ -790,6 +814,7 @@ export async function generateVideo(
     }
     if (frames.length) {
       const hosted = await Promise.all(frames.slice(0, 2).map((image) => prepareWanImage(image, state.aspect)));
+      uploadedInputIds.push(...collectUploadedRunwareIds(hosted));
       task.inputs = {
         frameImages: hosted.map((image, index) => ({
           image,
@@ -800,10 +825,13 @@ export async function generateVideo(
       task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), { frames: true, aspect: state.aspect });
     } else {
       const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
+      uploadedInputIds.push(...collectUploadedRunwareIds(videos));
       const audios = await Promise.all(
         (state.wanAudios || []).filter(Boolean).slice(0, 5).map(async (item) => uploadRunwareMedia(await ensureWanAudioDataUri(item)))
       );
+      uploadedInputIds.push(...collectUploadedRunwareIds(audios));
       const hostedRefs = refs.length ? await Promise.all(refs.slice(0, 10).map((image) => prepareWanImage(image, state.aspect))) : [];
+      uploadedInputIds.push(...collectUploadedRunwareIds(hostedRefs));
       const inputs: Record<string, unknown> = {};
       if (hostedRefs.length) inputs.referenceImages = hostedRefs;
       if (videos.length) inputs.referenceVideos = videos;
@@ -838,9 +866,13 @@ export async function generateVideo(
     }
   }
 
-  return withKeepAlive("Generating a video… You can switch apps.", async () =>
-    toStudioResult("video", tab, state, await runTask(task, onProgress))
-  );
+  return withKeepAlive("Generating a video… You can switch apps.", async () => {
+    try {
+      return await toStudioResult("video", tab, state, await runTask(task, onProgress));
+    } finally {
+      if (uploadedInputIds.length) wipeUploadedInputs(uploadedInputIds);
+    }
+  });
 }
 
 async function toStudioResult(
