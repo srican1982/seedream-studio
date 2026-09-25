@@ -245,15 +245,28 @@ async function nativeVideoPlayUrl(relPath: string) {
   return { url: Capacitor.convertFileSrc(uri), localPath: relPath };
 }
 
-/** Confirm the mp4 on disk is real binary (not base64 text written as UTF-8). */
-async function assertNativeVideoFile(relPath: string, where: string) {
-  const read = await Filesystem.readFile({ directory: Directory.Data, path: relPath });
-  const data = typeof read.data === "string" ? read.data : "";
-  const head = peekBase64(data);
-  if (!looksLikeVideo(head)) {
+async function assertNativeVideoSize(relPath: string, where: string) {
+  const stat = await Filesystem.stat({ directory: Directory.Data, path: relPath });
+  const size = Number(stat.size ?? 0);
+  if (!Number.isFinite(size) || size < 2048) {
     await Filesystem.deleteFile({ directory: Directory.Data, path: relPath }).catch(() => {});
-    throw notAVideoError(head, where);
+    throw new Error(`Venice ${where} file is too small (${size} bytes).`);
   }
+}
+
+async function writeNativeVideoBase64(relPath: string, base64: string, where: string) {
+  const clean = base64.replace(/^data:[^,]*,/, "").replace(/\s/g, "");
+  const head = peekBase64(clean);
+  if (!looksLikeVideo(head)) throw notAVideoError(head, where);
+  await Filesystem.writeFile({
+    path: relPath,
+    data: clean,
+    directory: Directory.Data,
+    recursive: true,
+    encoding: Encoding.Base64,
+  });
+  await assertNativeVideoSize(relPath, where);
+  return nativeVideoPlayUrl(relPath);
 }
 
 async function saveBase64Video(
@@ -262,21 +275,10 @@ async function saveBase64Video(
   where = "result"
 ): Promise<{ url: string; localPath?: string }> {
   const clean = base64.replace(/^data:[^,]*,/, "").replace(/\s/g, "");
-  const head = peekBase64(clean);
-  if (!looksLikeVideo(head)) throw notAVideoError(head, where);
   console.info(`Venice video ok (${where}), ~${Math.round((clean.length * 0.75) / 1024)} KB`);
   const name = safeName(filename);
   if (isNativeApp()) {
-    const relPath = `ai-story/${name}`;
-    await Filesystem.writeFile({
-      path: relPath,
-      data: clean,
-      directory: Directory.Data,
-      recursive: true,
-      encoding: Encoding.Base64,
-    });
-    await assertNativeVideoFile(relPath, where);
-    return nativeVideoPlayUrl(relPath);
+    return writeNativeVideoBase64(`ai-story/${name}`, base64, where);
   }
   const blob = await base64ToBlob(clean);
   return { url: URL.createObjectURL(blob) };
@@ -288,6 +290,7 @@ async function saveFromDownloadUrl(downloadUrl: string, filename: string): Promi
   if (isNativeApp()) {
     let last = "";
     for (let attempt = 0; attempt < 3; attempt++) {
+      await Filesystem.deleteFile({ directory: Directory.Data, path: relPath }).catch(() => {});
       try {
         const downloaded = await Filesystem.downloadFile({
           url: downloadUrl,
@@ -296,14 +299,29 @@ async function saveFromDownloadUrl(downloadUrl: string, filename: string): Promi
           recursive: true,
         });
         if (!downloaded.path) throw new Error("empty path");
-        await assertNativeVideoFile(relPath, "download link");
+        await assertNativeVideoSize(relPath, "download link");
         return nativeVideoPlayUrl(relPath);
       } catch (error) {
         last = error instanceof Error ? error.message : String(error);
-        await Filesystem.deleteFile({ directory: Directory.Data, path: relPath }).catch(() => {});
         if (/HTTP 404|HTTP 410|404|410/i.test(last)) break;
-        await nativeSleep(3000);
       }
+
+      try {
+        const res = await CapacitorHttp.get({
+          url: downloadUrl,
+          responseType: "blob",
+          connectTimeout: 600000,
+          readTimeout: 600000,
+        });
+        if (res.status < 400 && typeof res.data === "string" && res.data.length > 1000) {
+          return writeNativeVideoBase64(relPath, res.data, "download link");
+        }
+        last = `HTTP ${res.status}`;
+        if (res.status === 404 || res.status === 410) break;
+      } catch (error) {
+        last = error instanceof Error ? error.message : String(error);
+      }
+      await nativeSleep(3000);
     }
     throw new Error(`Could not download the Venice video (${last}).`);
   }
@@ -372,15 +390,6 @@ function downloadUrlForJob(job: VeniceJob, json?: Record<string, unknown>) {
   return job.downloadUrl || parseDownloadUrl(json);
 }
 
-/** Wan / MiniMax on Venice: poll JSON status, then fetch the queue download link (same as Runware-style download). */
-function veniceUsesStatusPoll(model: string) {
-  return /wan-|minimax-/i.test(model);
-}
-
-function usesVeniceDownloadLink(job: VeniceJob) {
-  return Boolean(job.downloadUrl) || veniceUsesStatusPoll(job.model);
-}
-
 function isTerminalVeniceError(msg: string) {
   return /FAILED|ERROR|expired|HTTP 410|not found|content violation|rejected the api key|balance is too low/i.test(msg);
 }
@@ -427,25 +436,28 @@ async function saveFromRetrieveBinary(job: VeniceJob, res: VeniceResponse): Prom
 
 /** One retrieve call. The video stays on Venice until we confirm it saved. */
 async function fetchJobOnce(job: VeniceJob): Promise<FetchOutcome> {
-  // VPS / Wan-style models: poll JSON status, then GET the queue download_url (not binary retrieve).
-  if (usesVeniceDownloadLink(job)) {
-    const res = await venicePost("/video/retrieve", { model: job.model, queue_id: job.queueId }, false);
-    if (res.status === 503 || res.status === 404 || res.status === 409) return { kind: "waiting" };
-    if (res.status >= 400) throw new Error(veniceError(res, "Venice video failed"));
-    const status = String(res.json?.status || "").toUpperCase();
-    if (status === "FAILED" || status === "ERROR") throw new Error(veniceError(res, "Venice video failed"));
+  // 1) JSON status (Wan / queue download links). Ignore 4xx here — some models only support binary retrieve.
+  const jsonRes = await venicePost("/video/retrieve", { model: job.model, queue_id: job.queueId }, false);
+  if (jsonRes.status === 503 || jsonRes.status === 404 || jsonRes.status === 409) return { kind: "waiting" };
+  if (jsonRes.status === 401 || jsonRes.status === 402 || jsonRes.status === 422) {
+    throw new Error(veniceError(jsonRes, "Venice video failed"));
+  }
+  if (jsonRes.status < 400 && jsonRes.json) {
+    const status = String(jsonRes.json.status || "").toUpperCase();
+    if (status === "FAILED" || status === "ERROR") throw new Error(veniceError(jsonRes, "Venice video failed"));
     if (status === "COMPLETED") {
-      const downloadUrl = downloadUrlForJob(job, res.json);
+      const downloadUrl = downloadUrlForJob(job, jsonRes.json);
       if (downloadUrl) {
+        if (!job.downloadUrl) rememberJob({ ...job, downloadUrl });
         return { kind: "saved", saved: await saveFromDownloadUrl(downloadUrl, job.filename) };
       }
-      console.warn("Venice COMPLETED without download_url; trying inline retrieve.", res.json);
-    } else {
-      return { kind: "waiting", json: res.json };
+      console.warn("Venice COMPLETED without download_url; trying inline retrieve.", jsonRes.json);
+    } else if (status && status !== "COMPLETED") {
+      return { kind: "waiting", json: jsonRes.json };
     }
   }
 
-  // Inline mp4 models: retrieve returns the file when ready.
+  // 2) Inline mp4 retrieve when the job is done (or this model has no JSON status).
   const res = await venicePost("/video/retrieve", { model: job.model, queue_id: job.queueId }, true);
   if (res.status === 503 || res.status === 404 || res.status === 409) return { kind: "waiting" };
   if (res.status >= 400) throw new Error(veniceError(res, "Venice video failed"));
