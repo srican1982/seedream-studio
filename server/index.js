@@ -81,6 +81,36 @@ app.post("/api/enhance", async (req, res) => {
   }
 });
 
+const VENICE_URL = "https://api.venice.ai/api/v1";
+const VENICE_OPS = new Set(["queue", "retrieve", "complete", "quote"]);
+
+// Web-only proxy for Venice video (the phone APK calls Venice directly).
+app.post("/api/venice/video/:op", async (req, res) => {
+  const op = String(req.params.op || "");
+  if (!VENICE_OPS.has(op)) {
+    res.status(404).json({ error: "Unknown Venice video operation." });
+    return;
+  }
+  const key = String(req.get("x-venice-key") || process.env.VENICE_API_KEY || "").trim();
+  if (!key) {
+    res.status(401).json({ error: "Add your Venice API key in Settings." });
+    return;
+  }
+  try {
+    const upstream = await fetch(`${VENICE_URL}/video/${op}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify(req.body ?? {}),
+      signal: AbortSignal.timeout(600000),
+    });
+    res.status(upstream.status);
+    res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/json");
+    res.send(Buffer.from(await upstream.arrayBuffer()));
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : "Venice request failed" });
+  }
+});
+
 app.post("/api/runware", async (req, res) => {
   const key = apiKey();
   if (!key) {

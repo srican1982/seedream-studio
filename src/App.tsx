@@ -11,6 +11,14 @@ import {
   type Health,
 } from "./api";
 import AgentView from "./AgentView";
+import {
+  hasLocalVeniceKey,
+  loadVideoProvider,
+  PROVIDER_EVENT,
+  saveVeniceKey,
+  saveVideoProvider,
+  type VideoProvider,
+} from "./venice";
 
 export default function App() {
   const [health, setHealth] = useState<Health>({ ok: false, configured: false, grok: false, native: false });
@@ -18,6 +26,8 @@ export default function App() {
   const [chatsOpen, setChatsOpen] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
   const [grokDraft, setGrokDraft] = useState("");
+  const [veniceDraft, setVeniceDraft] = useState("");
+  const [provider, setProvider] = useState<VideoProvider>(loadVideoProvider());
   const [runwarePurgeDraft, setRunwarePurgeDraft] = useState("");
   const [runwarePurgeStatus, setRunwarePurgeStatus] = useState("");
   const [runwarePurgeBusy, setRunwarePurgeBusy] = useState(false);
@@ -49,7 +59,17 @@ export default function App() {
     })();
     setKeyDraft(hasLocalApiKey() ? "••••••••••••" : "");
     setGrokDraft(hasLocalOpenRouterKey() ? "••••••••••••" : "");
+    setVeniceDraft(hasLocalVeniceKey() ? "••••••••••••" : "");
+    const onProvider = () => setProvider(loadVideoProvider());
+    window.addEventListener(PROVIDER_EVENT, onProvider);
+    return () => window.removeEventListener(PROVIDER_EVENT, onProvider);
   }, []);
+
+  function pickProvider(next: VideoProvider) {
+    saveVideoProvider(next);
+    setProvider(next);
+    if (next === "venice" && !hasLocalVeniceKey() && health.native) openSettings(false);
+  }
 
   useEffect(() => {
     const root = document.documentElement;
@@ -86,6 +106,14 @@ export default function App() {
           </div>
         </div>
         <div className="top-actions">
+          <div className="provider-toggle" role="group" aria-label="Video service">
+            <button type="button" className={provider === "runware" ? "active" : ""} onClick={() => pickProvider("runware")}>
+              Runware
+            </button>
+            <button type="button" className={provider === "venice" ? "active" : ""} onClick={() => pickProvider("venice")}>
+              Venice
+            </button>
+          </div>
           <span className={`status ${health.configured ? "on" : "off"}`}>
             <i />
             {health.configured ? "API Online" : "API Key"}
@@ -109,6 +137,8 @@ export default function App() {
               e.preventDefault();
               if (keyDraft && !keyDraft.includes("•")) saveApiKey(keyDraft);
               if (grokDraft && !grokDraft.includes("•")) saveOpenRouterKey(grokDraft);
+              if (veniceDraft && !veniceDraft.includes("•")) saveVeniceKey(veniceDraft);
+              if (!veniceDraft) saveVeniceKey("");
               setSettingsOpen(false);
               void checkHealth().then(setHealth);
             }}
@@ -133,6 +163,18 @@ export default function App() {
               placeholder="sk-or-v1-..."
               onChange={(e) => setGrokDraft(e.target.value)}
             />
+            <label>Venice API key</label>
+            <input
+              type="password"
+              autoComplete="off"
+              value={veniceDraft}
+              placeholder="VENICE-..."
+              onChange={(e) => setVeniceDraft(e.target.value)}
+            />
+            <p className="sheet-note">
+              The Runware / Venice switch at the top picks who makes videos (Wan 3.0, Wan 3.0 Prime, MiniMax H3 Max). Pictures and
+              prompt help stay the same.
+            </p>
             <hr className="sheet-divider" />
             <h3 id="runware-server-photos">Delete photos on Runware server</h3>
             <p className="sheet-note">

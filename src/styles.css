@@ -98,6 +98,26 @@ button { cursor: pointer; }
 .status i {
   width: 7px; height: 7px; border-radius: 50%; background: #6b7280; display: block;
 }
+.provider-toggle {
+  display: inline-flex;
+  background: #1c1e28;
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+}
+.provider-toggle button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.7rem;
+  padding: 4px 9px;
+  border-radius: 999px;
+}
+.provider-toggle button.active {
+  background: var(--card);
+  color: var(--text, #fff);
+  box-shadow: 0 0 0 1px var(--line);
+}
 .status.on { color: var(--ok); }
 .status.on i { background: var(--ok); }
 .icon-btn {

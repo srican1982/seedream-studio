@@ -149,6 +149,21 @@ export const VIDEO_MODELS: VideoModel[] = [
     audioInSettings: true,
     usesWidthHeight: true,
   },
+  {
+    // Venice only (no Runware route in this app).
+    id: "minimax-h3-max",
+    kind: "video",
+    family: "minimax",
+    airId: "venice:minimax-h3-max",
+    label: "H3 Max",
+    subtitle: "MiniMax · Venice",
+    maxImages: 10,
+    promptMax: 4000,
+    durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    resolutions: ["480p", "720p", "1080p"],
+    supportsReferenceImages: true,
+    audioInSettings: true,
+  },
 ];
 
 export const IMAGE_TAGS = [
@@ -315,7 +330,7 @@ export const VIDEO_AUDIO_MODELS: VideoTabId[] = ["seedance-2-5", "seedance-2-0",
 export const VIDEO_WAN_MODELS: VideoTabId[] = ["wan-3", "wan-3-prime"];
 
 export const AGENT_IMAGE_TABS: ImageTabId[] = ["qwen-3-pro"];
-export const AGENT_VIDEO_TABS: VideoTabId[] = ["wan-3", "wan-3-prime"];
+export const AGENT_VIDEO_TABS: VideoTabId[] = ["wan-3", "wan-3-prime", "minimax-h3-max"];
 
 export function imageModelsFor(family: ImageFamily) {
   return IMAGE_MODELS.filter((model) => model.family === family);

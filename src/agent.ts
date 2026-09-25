@@ -73,6 +73,7 @@ export const AGENT_MODEL_CHIPS: AgentModelChip[] = [
   { id: "qwen-3-pro", kind: "image", label: "Qwen 3.0 Pro", token: "Qwen 3.0 Pro" },
   { id: "wan-3", kind: "video", label: "Wan 3.0", token: "Wan 3.0" },
   { id: "wan-3-prime", kind: "video", label: "Wan 3.0 Prime", token: "Wan 3.0 Prime" },
+  { id: "minimax-h3-max", kind: "video", label: "MiniMax H3 Max", token: "MiniMax H3 Max" },
 ];
 
 export const AGENT_JOB_PRESETS = [
@@ -124,7 +125,8 @@ export function toggleChipToken(text: string, token: string) {
 
 export function modelFromText(text: string, kind: AgentShotKind) {
   if (kind === "video") {
-    if (/wan\s*3(?:\.0)?\s*prime/i.test(text)) return "wan-3-prime";
+    if (/\bmini\s*max\b/i.test(text)) return "minimax-h3-max";
+    if (/wan\s*3(?:\.0)?\s*pri(?:me|ce)\b/i.test(text)) return "wan-3-prime";
     if (/\bwan\s*3(?:\.0)?\b/i.test(text)) return "wan-3";
   }
   if (kind === "image" && /\bqwen\b/i.test(text)) return "qwen-3-pro";
@@ -753,7 +755,7 @@ How to write shot.prompt:
 - Training photos often come from another room. Never copy those rooms into the movie. If clip-end exists, that place is the whole clip. Do not open or end in a bedroom.
 - Qwen 3.0 Pro can only take 3 reference images. Wan can take 10. If there are more, keep the ones the user cares about most, usually new uploads first.
 - For video, describe the motion they asked in the same explicit way. Include scene sound. Add spoken words only if they asked someone to say them.
-- Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0. If an Output size / Using line is given, that size is locked. Write that resolution and orientation only. Never write 480p landscape unless that is the pick. Never write landscape or 16:9 when the pick is vertical 9:16. Duration is what they said, else 10s. Wan max 30s per clip.
+- Image model is always qwen-3-pro. Video is wan-3-prime unless they named Wan 3.0 (wan-3) or MiniMax (minimax-h3-max). If an Output size / Using line is given, that size is locked. Write that resolution and orientation only. Never write 480p landscape unless that is the pick. Never write landscape or 16:9 when the pick is vertical 9:16. Duration is what they said, else 10s. Wan max 30s per clip. MiniMax max 15s per clip.
 
 If they are only chatting, return shots: [] and put your answer in reply.
 reply must be one short sentence or "". Never put JSON, markdown, or the generator prompt in reply. The Qwen/Wan instruction belongs only in shots[].prompt.

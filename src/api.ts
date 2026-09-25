@@ -21,6 +21,7 @@ import {
 import { nativePollRunware, nativeSleep, withKeepAlive } from "./keep-alive";
 import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
+import { generateVeniceVideo, hasLocalVeniceKey, loadVideoProvider, veniceSupports } from "./venice";
 
 const RUNWARE = "https://api.runware.ai/v1";
 const OPENROUTER = "https://openrouter.ai/api/v1/chat/completions";
@@ -262,7 +263,7 @@ export async function checkHealth(): Promise<Health> {
     const res = await fetch("/api/health");
     if (res.ok) {
       const body = (await res.json()) as { ok?: boolean; configured?: boolean; grok?: boolean };
-      const configured = Boolean(body.configured) || hasLocalApiKey();
+      const configured = Boolean(body.configured) || hasLocalApiKey() || hasLocalVeniceKey();
       const grok = Boolean(body.grok) || hasLocalOpenRouterKey();
       return { ok: true, configured, grok, native: Capacitor.isNativePlatform() };
     }
@@ -270,8 +271,8 @@ export async function checkHealth(): Promise<Health> {
     /* proxy unavailable — APK / direct mode */
   }
   return {
-    ok: hasLocalApiKey(),
-    configured: hasLocalApiKey(),
+    ok: hasLocalApiKey() || hasLocalVeniceKey(),
+    configured: hasLocalApiKey() || hasLocalVeniceKey(),
     grok: hasLocalOpenRouterKey(),
     native: Capacitor.isNativePlatform(),
   };
@@ -818,6 +819,36 @@ export async function generateVideo(
   const duration = model.durations.includes(state.duration) ? state.duration : model.durations[0];
   const resolution = model.resolutions.includes(state.resolution) ? state.resolution : model.resolutions[0];
   const images = state.images.map((img) => img.dataUri).filter(isUsableReferenceImage);
+
+  if (loadVideoProvider() === "venice") {
+    if (!veniceSupports(tab)) throw new Error(`${model.label} is not set up for Venice. Switch the toggle to Runware.`);
+    return withKeepAlive("Generating a video on Venice… You can switch apps.", async () => {
+      const stillSrc = (img: { dataUri?: string; preview?: string }) => img.dataUri || img.preview || "";
+      const rawFrames = (state.wanFrames || []).map(stillSrc).filter(isUsableReferenceImage).slice(0, 2);
+      if ((state.wanFrames || []).length && !rawFrames.length) {
+        throw new Error("Those frame photos could not be read as JPEG or PNG. Attach them again.");
+      }
+      const frames = await Promise.all(rawFrames.map((image) => fitWanImage(image, state.aspect)));
+      const refs = frames.length ? [] : await Promise.all(images.slice(0, 10).map((image) => fitWanImage(image, state.aspect)));
+      const videos = frames.length ? [] : (state.wanVideos || []).filter(Boolean).slice(0, 5);
+      const audios = frames.length
+        ? []
+        : await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => ensureWanAudioDataUri(item)));
+      const base = VIDEO_WAN_MODELS.includes(tab) ? wanPositivePrompt(state.prompt, state.audio) : state.prompt.trim();
+      const prompt = scrubWanPrompt(base, {
+        frames: Boolean(frames.length),
+        refs: Boolean(refs.length),
+        video: Boolean(videos.length),
+        audio: Boolean(audios.length),
+        aspect: state.aspect,
+      });
+      return generateVeniceVideo({ tab, state, prompt, duration, resolution, frames, refs, videos, audios, onProgress });
+    });
+  }
+  if (!VIDEO_WAN_MODELS.includes(tab) && model.family === "minimax") {
+    throw new Error("MiniMax runs on Venice. Switch the toggle at the top to Venice.");
+  }
+
   const task: Record<string, unknown> = {
     taskType: "videoInference",
     taskUUID,
