@@ -337,7 +337,22 @@ function patchJob(job: VeniceJob, patch: Partial<VeniceJob>) {
 
 function parseDownloadUrl(json?: Record<string, unknown>) {
   const raw = json?.download_url ?? json?.downloadUrl;
+  if (typeof raw === "string" && raw.trim()) return raw.trim();
+  const result = json?.result;
+  if (result && typeof result === "object") {
+    const url = (result as Record<string, unknown>).url;
+    if (typeof url === "string" && url.trim()) return url.trim();
+  }
+  return "";
+}
+
+function parseQueueId(json?: Record<string, unknown>) {
+  const raw = json?.queue_id ?? json?.queueId ?? json?.job_id ?? json?.jobId;
   return typeof raw === "string" && raw.trim() ? raw.trim() : "";
+}
+
+function veniceJobStatus(json?: Record<string, unknown>) {
+  return String(json?.status || "").toUpperCase();
 }
 
 function downloadUrlForJob(job: VeniceJob, json?: Record<string, unknown>) {
@@ -379,7 +394,7 @@ async function saveFromRetrieveBinary(job: VeniceJob, res: VeniceResponse): Prom
     if (!looksLikeVideo(head)) throw notAVideoError(head, "result");
     return { kind: "saved", saved: { url: URL.createObjectURL(res.blob) } };
   }
-  const status = String(res.json?.status || "").toUpperCase();
+  const status = veniceJobStatus(res.json);
   if (status === "FAILED" || status === "ERROR") throw new Error(veniceError(res, "Venice video failed"));
   if (status === "COMPLETED") {
     const downloadUrl = downloadUrlForJob(job, res.json);
@@ -397,7 +412,7 @@ async function fetchJobOnce(job: VeniceJob): Promise<FetchOutcome> {
   }
 
   if (jsonRes.status < 400 && jsonRes.json) {
-    const status = String(jsonRes.json.status || "").toUpperCase();
+    const status = veniceJobStatus(jsonRes.json);
     if (status === "FAILED" || status === "ERROR") throw new Error(veniceError(jsonRes, "Venice video failed"));
     if (status !== "COMPLETED") {
       return { kind: "waiting", json: jsonRes.json };
@@ -489,7 +504,7 @@ async function queueVeniceJob(body: Record<string, unknown>, tab: VideoTabId, re
     if (res.status < 400) {
       const json = res.json || {};
       const model = String(json.model || body.model || "");
-      const queueId = String(json.queue_id || "");
+      const queueId = parseQueueId(json);
       if (!model || !queueId) throw new Error("Venice queue returned no job id.");
       const downloadUrl = parseDownloadUrl(json) || undefined;
       if (!downloadUrl && veniceUsesQueueDownload(model)) {
