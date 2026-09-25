@@ -14,7 +14,9 @@ import AgentView from "./AgentView";
 import {
   hasLocalVeniceKey,
   loadVideoProvider,
+  pendingVeniceCount,
   PROVIDER_EVENT,
+  recoverVeniceVideos,
   saveVeniceKey,
   saveVideoProvider,
   type VideoProvider,
@@ -27,6 +29,8 @@ export default function App() {
   const [keyDraft, setKeyDraft] = useState("");
   const [grokDraft, setGrokDraft] = useState("");
   const [veniceDraft, setVeniceDraft] = useState("");
+  const [veniceRecoverBusy, setVeniceRecoverBusy] = useState(false);
+  const [veniceRecoverStatus, setVeniceRecoverStatus] = useState("");
   const [provider, setProvider] = useState<VideoProvider>(loadVideoProvider());
   const [runwarePurgeDraft, setRunwarePurgeDraft] = useState("");
   const [runwarePurgeStatus, setRunwarePurgeStatus] = useState("");
@@ -175,6 +179,28 @@ export default function App() {
               The Runware / Venice switch at the top picks who makes videos (Wan 3.0, Wan 3.0 Prime, MiniMax H3 Max). Pictures and
               prompt help stay the same.
             </p>
+            <button
+              type="button"
+              className="ghost-btn"
+              disabled={veniceRecoverBusy}
+              onClick={() => {
+                setVeniceRecoverBusy(true);
+                setVeniceRecoverStatus("");
+                void recoverVeniceVideos()
+                  .then(({ tried, saved, errors }) => {
+                    if (!tried) setVeniceRecoverStatus("No unsaved Venice videos.");
+                    else
+                      setVeniceRecoverStatus(
+                        `Saved ${saved} of ${tried} to Gallery.${errors.length ? ` ${errors.join(" · ")}` : ""}`
+                      );
+                  })
+                  .catch((error) => setVeniceRecoverStatus(error instanceof Error ? error.message : "Recover failed."))
+                  .finally(() => setVeniceRecoverBusy(false));
+              }}
+            >
+              {veniceRecoverBusy ? "Recovering…" : `Recover Venice videos (${pendingVeniceCount()})`}
+            </button>
+            {veniceRecoverStatus ? <p className="sheet-note">{veniceRecoverStatus}</p> : null}
             <hr className="sheet-divider" />
             <h3 id="runware-server-photos">Delete photos on Runware server</h3>
             <p className="sheet-note">
