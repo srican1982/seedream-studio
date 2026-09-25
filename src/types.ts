@@ -1,11 +1,11 @@
-export type Mode = "images" | "video";
+export type Mode = "images" | "video" | "agent";
 export type Quality = "basic" | "high";
 export type ImageFormat = "PNG" | "JPG" | "WEBP";
 export type VideoFormat = "MP4" | "WEBM" | "MOV";
 export type Aspect = "1:1" | "16:9" | "9:16" | "4:3" | "3:4" | "21:9";
 
 export type ImageFamily = "seedream" | "qwen";
-export type VideoFamily = "seedance" | "wan";
+export type VideoFamily = "seedance" | "wan" | "minimax";
 
 export type ImageTabId =
   | "seedream-5-pro"
@@ -14,14 +14,18 @@ export type ImageTabId =
   | "qwen-3"
   | "qwen-3-pro"
   | "qwen-layered";
-export type VideoTabId = "seedance-2-5" | "seedance-2-0" | "seedance-1-5" | "wan-3" | "wan-3-prime";
+export type VideoTabId = "seedance-2-5" | "seedance-2-0" | "seedance-1-5" | "wan-3" | "wan-3-prime" | "minimax-h3-max";
 export type TabId = ImageTabId | VideoTabId;
+
+export type LocalMediaKind = "image" | "video" | "audio";
 
 export type LocalImage = {
   id: string;
   name: string;
   preview: string;
   dataUri: string;
+  mediaKind?: LocalMediaKind;
+  mime?: string;
 };
 
 export type ResultKind = "image" | "video";
@@ -38,6 +42,9 @@ export type StudioResult = {
 
 export type TabState = {
   images: LocalImage[];
+  wanFrames?: LocalImage[];
+  wanVideos?: string[];
+  wanAudios?: string[];
   prompt: string;
   aspect: Aspect;
   quality: Quality;

@@ -57,15 +57,17 @@ app.post("/api/enhance", async (req, res) => {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
         "HTTP-Referer": "https://github.com/srican1982/seedream-studio",
-        "X-Title": "Seedream Studio",
+        "X-Title": "Seedream Agent",
       },
       body: JSON.stringify({
-        model: body.model || "x-ai/grok-4.6",
+        model: body.model || "google/gemma-4-31b-it",
         messages: body.messages,
         stream: false,
         temperature: typeof body.temperature === "number" ? body.temperature : 0.7,
         max_tokens: typeof body.max_tokens === "number" ? body.max_tokens : 1024,
-        provider: body.provider || { order: ["x-ai"], allow_fallbacks: false },
+        provider: body.provider || { data_collection: "deny", zdr: true },
+        ...(Array.isArray(body.safety_settings) ? { safety_settings: body.safety_settings } : {}),
+        ...(body.reasoning && typeof body.reasoning === "object" ? { reasoning: body.reasoning } : {}),
       }),
       signal: AbortSignal.timeout(120000),
     });
@@ -76,6 +78,36 @@ app.post("/api/enhance", async (req, res) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : "OpenRouter request failed";
     res.status(502).json({ error: "upstreamError", message });
+  }
+});
+
+const VENICE_URL = "https://api.venice.ai/api/v1";
+const VENICE_OPS = new Set(["queue", "retrieve", "complete", "quote"]);
+
+// Web-only proxy for Venice video (the phone APK calls Venice directly).
+app.post("/api/venice/video/:op", async (req, res) => {
+  const op = String(req.params.op || "");
+  if (!VENICE_OPS.has(op)) {
+    res.status(404).json({ error: "Unknown Venice video operation." });
+    return;
+  }
+  const key = String(req.get("x-venice-key") || process.env.VENICE_API_KEY || "").trim();
+  if (!key) {
+    res.status(401).json({ error: "Add your Venice API key in Settings." });
+    return;
+  }
+  try {
+    const upstream = await fetch(`${VENICE_URL}/video/${op}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify(req.body ?? {}),
+      signal: AbortSignal.timeout(600000),
+    });
+    res.status(upstream.status);
+    res.setHeader("Content-Type", upstream.headers.get("content-type") || "application/json");
+    res.send(Buffer.from(await upstream.arrayBuffer()));
+  } catch (error) {
+    res.status(502).json({ error: error instanceof Error ? error.message : "Venice request failed" });
   }
 });
 

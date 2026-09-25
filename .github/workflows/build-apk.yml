@@ -2,7 +2,7 @@ name: build-apk
 
 on:
   push:
-    branches: [main]
+    branches: [main, agent]
   workflow_dispatch: {}
 
 jobs:
@@ -16,18 +16,22 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+        env:
+          VITE_APP_BUILD: ${{ github.sha }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - run: npx cap add android
       - run: npx cap sync android
       - run: node scripts/patch-android.mjs
-      - name: Build debug APK
+      - name: Build release APK
         working-directory: android
-        run: chmod +x gradlew && ./gradlew assembleDebug
+        run: chmod +x gradlew && ./gradlew assembleRelease
       - uses: actions/upload-artifact@v4
         with:
-          name: seedream-studio-debug-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          name: ai-story-release-apk
+          path: android/app/build/outputs/apk/release/*.apk

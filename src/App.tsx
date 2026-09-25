@@ -1,64 +1,58 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState } from "react";
+declare const __APP_BUILD__: string;
 import {
-  canAutoEnhancePrompt,
   checkHealth,
-  downloadResult,
-  enhancePrompt,
   ensureDeviceConfig,
-  generateImage,
-  generateVideo,
   hasLocalApiKey,
   hasLocalOpenRouterKey,
+  purgeRunwareServerCopies,
   saveApiKey,
   saveOpenRouterKey,
   type Health,
 } from "./api";
-import { appendTag, fileToDataUri, uuid } from "./media";
+import AgentView from "./AgentView";
 import {
-  ASPECTS,
-  IMAGE_TAGS,
-  QWEN_TAGS,
-  VIDEO_AUDIO_MODELS,
-  VIDEO_SAFETY_MODELS,
-  VIDEO_TAGS,
-  WAN_ASPECTS,
-  WAN_TAGS,
-  findImage,
-  findVideo,
-  imageModelsFor,
-  initialStates,
-  videoModelsFor,
-} from "./models";
-import type { ImageFamily, ImageTabId, Mode, TabId, TabState, VideoFamily, VideoTabId } from "./types";
-import { isNativeApp, pickGalleryImages } from "./native";
+  hasLocalVeniceKey,
+  loadVideoProvider,
+  pendingVeniceCount,
+  PROVIDER_EVENT,
+  recoverVeniceVideos,
+  saveVeniceKey,
+  saveVideoProvider,
+  type VideoProvider,
+} from "./venice";
 
 export default function App() {
-  const [mode, setMode] = useState<Mode>("images");
-  const [imageFamily, setImageFamily] = useState<ImageFamily>("seedream");
-  const [videoFamily, setVideoFamily] = useState<VideoFamily>("seedance");
-  const [imageTab, setImageTab] = useState<ImageTabId>("seedream-5-pro");
-  const [videoTab, setVideoTab] = useState<VideoTabId>("seedance-2-5");
-  const [tabs, setTabs] = useState(initialStates);
   const [health, setHealth] = useState<Health>({ ok: false, configured: false, grok: false, native: false });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [chatsOpen, setChatsOpen] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
   const [grokDraft, setGrokDraft] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [enhancing, setEnhancing] = useState(false);
-  const [savedNote, setSavedNote] = useState<string | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const tabsRef = useRef(tabs);
-  tabsRef.current = tabs;
+  const [veniceDraft, setVeniceDraft] = useState("");
+  const [veniceRecoverBusy, setVeniceRecoverBusy] = useState(false);
+  const [veniceRecoverStatus, setVeniceRecoverStatus] = useState("");
+  const [provider, setProvider] = useState<VideoProvider>(loadVideoProvider());
+  const [runwarePurgeDraft, setRunwarePurgeDraft] = useState("");
+  const [runwarePurgeStatus, setRunwarePurgeStatus] = useState("");
+  const [runwarePurgeBusy, setRunwarePurgeBusy] = useState(false);
+  const [runwarePurgeFocus, setRunwarePurgeFocus] = useState(false);
+  const runwarePurgeRef = useRef<HTMLTextAreaElement>(null);
 
-  const activeId: TabId = mode === "images" ? imageTab : videoTab;
-  const state = tabs[activeId];
-  const imageModel = mode === "images" ? findImage(imageTab) : null;
-  const videoModel = mode === "video" ? findVideo(videoTab) : null;
-  const model = imageModel ?? videoModel!;
-  const maxImages = model.maxImages;
-  const tags = mode === "images" ? (imageFamily === "qwen" ? QWEN_TAGS : IMAGE_TAGS) : videoFamily === "wan" ? WAN_TAGS : VIDEO_TAGS;
-  const visibleModels = mode === "images" ? imageModelsFor(imageFamily) : videoModelsFor(videoFamily);
+  const appBuildLabel =
+    typeof __APP_BUILD__ === "string" && __APP_BUILD__ !== "dev" ? __APP_BUILD__.slice(0, 7) : "dev";
+
+  function openSettings(runware = false) {
+    setRunwarePurgeFocus(runware);
+    setSettingsOpen(true);
+  }
+
+  useEffect(() => {
+    if (!settingsOpen || !runwarePurgeFocus) return;
+    const scroll = () => runwarePurgeRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    requestAnimationFrame(scroll);
+    const t = window.setTimeout(scroll, 120);
+    return () => window.clearTimeout(t);
+  }, [settingsOpen, runwarePurgeFocus]);
 
   useEffect(() => {
     void (async () => {
@@ -69,565 +63,73 @@ export default function App() {
     })();
     setKeyDraft(hasLocalApiKey() ? "••••••••••••" : "");
     setGrokDraft(hasLocalOpenRouterKey() ? "••••••••••••" : "");
+    setVeniceDraft(hasLocalVeniceKey() ? "••••••••••••" : "");
+    const onProvider = () => setProvider(loadVideoProvider());
+    window.addEventListener(PROVIDER_EVENT, onProvider);
+    return () => window.removeEventListener(PROVIDER_EVENT, onProvider);
   }, []);
 
-  function patch(partial: Partial<TabState>) {
-    setTabs((prev) => ({ ...prev, [activeId]: { ...prev[activeId], ...partial } }));
+  function pickProvider(next: VideoProvider) {
+    saveVideoProvider(next);
+    setProvider(next);
+    if (next === "venice" && !hasLocalVeniceKey() && health.native) openSettings(false);
   }
 
-  async function onFiles(list: File[] | FileList | null) {
-    const files = list ? Array.from(list) : [];
-    if (files.length === 0) return;
-    const tabId = activeId;
-    try {
-      const existing = tabsRef.current[tabId].images;
-      const room = Math.max(0, maxImages - existing.length);
-      const incoming = files.slice(0, room);
-      if (incoming.length === 0) {
-        patch({ error: `This tab already has ${maxImages} images.` });
-        return;
-      }
-
-      const placeholders = incoming.map((file) => ({
-        id: uuid(),
-        name: file.name || "photo",
-        preview: URL.createObjectURL(file),
-        dataUri: "",
-        file,
-      }));
-
-      setTabs((prev) => ({
-        ...prev,
-        [tabId]: {
-          ...prev[tabId],
-          images: [
-            ...existing,
-            ...placeholders.map(({ id, name, preview, dataUri }) => ({ id, name, preview, dataUri })),
-          ],
-          error: null,
-        },
-      }));
-      setAdding(true);
-
-      const encoded = await Promise.all(
-        placeholders.map(async (item) => {
-          const dataUri = await fileToDataUri(item.file);
-          return { id: item.id, name: item.name, preview: dataUri || item.preview, dataUri, old: item.preview };
-        })
-      );
-      setTabs((prev) => {
-        const merged = prev[tabId].images.map((img) => {
-          const row = encoded.find((item) => item.id === img.id);
-          if (!row) return img;
-          return { id: row.id, name: row.name, preview: row.preview, dataUri: row.dataUri };
-        });
-        return { ...prev, [tabId]: { ...prev[tabId], images: merged, error: null } };
-      });
-      encoded.forEach((row) => {
-        if (row.dataUri && row.old.startsWith("blob:")) URL.revokeObjectURL(row.old);
-      });
-    } catch (error) {
-      setTabs((prev) => ({
-        ...prev,
-        [tabId]: {
-          ...prev[tabId],
-          error: error instanceof Error ? error.message : "Could not read images.",
-        },
-      }));
-    } finally {
-      setAdding(false);
-    }
-  }
-
-  async function onEnhancePrompt() {
-    const prompt = state.prompt.trim();
-    if (prompt.length < 2 || state.busy || enhancing) return;
-    setEnhancing(true);
-    patch({ error: null });
-    try {
-      const next = await enhancePrompt({
-        prompt,
-        kind: mode === "images" ? "image" : "video",
-        family: (imageModel?.family || videoModel?.family) ?? "seedream",
-        refCount: state.images.length,
-        promptMax: model.promptMax,
-      });
-      patch({ prompt: next, error: null });
-    } catch (error) {
-      patch({ error: error instanceof Error ? error.message : "Could not enhance the prompt." });
-    } finally {
-      setEnhancing(false);
-    }
-  }
-
-  async function onGenerate() {
-    let prompt = state.prompt.trim();
-    if (prompt.length < (mode === "video" ? 2 : 1)) {
-      patch({ error: "Write a prompt first." });
-      return;
-    }
-    if (imageModel?.requiresReference && state.images.length < 1) {
-      patch({ error: "Qwen Layered needs one reference image." });
-      return;
-    }
-    if (state.images.some((img) => !img.dataUri)) {
-      patch({ error: "Wait a moment — photos are still loading." });
-      return;
-    }
-    patch({ busy: true, error: null, progress: 0, result: null });
-    try {
-      if (state.enhancePrompt && canAutoEnhancePrompt(prompt)) {
-        setEnhancing(true);
-        prompt = await enhancePrompt({
-          prompt,
-          kind: mode === "images" ? "image" : "video",
-          family: (imageModel?.family || videoModel?.family) ?? "seedream",
-          refCount: state.images.length,
-          promptMax: model.promptMax,
-        });
-        if (imageModel?.family === "qwen" && imageTab !== "qwen-layered" && state.images.length >= 2 && !/\bfirst image\b/i.test(prompt)) {
-          prompt = `${prompt} The first image is the person. The second image is the pose only. Create a new photo. Do not copy either picture.`.slice(
-            0,
-            model.promptMax
-          );
-        }
-        patch({ prompt });
-        setEnhancing(false);
-      }
-      const result =
-        mode === "images"
-          ? await generateImage(imageTab, { ...state, prompt }, (n) => patch({ progress: n }))
-          : await generateVideo(videoTab, { ...state, prompt }, (n) => patch({ progress: n }));
-      patch({ busy: false, progress: 100, result });
-    } catch (error) {
-      setEnhancing(false);
-      patch({
-        busy: false,
-        progress: null,
-        error: error instanceof Error ? error.message : "Generation failed.",
-      });
-    }
-  }
-
-  async function pickPhotos() {
-    if (state.images.length >= maxImages) return;
-    if (isNativeApp()) {
-      try {
-        const files = await pickGalleryImages(maxImages - tabsRef.current[activeId].images.length);
-        await onFiles(files);
-      } catch (error) {
-        patch({
-          error: error instanceof Error ? error.message : "Could not open the gallery.",
-        });
-      }
-      return;
-    }
-    fileRef.current?.click();
-  }
-
-  async function onDownload() {
-    if (!state.result || saving) return;
-    setSaving(true);
-    setSavedNote(null);
-    try {
-      const how = await downloadResult(state.result);
-      patch({ error: null });
-      setSavedNote(
-        how === "gallery"
-          ? "Saved to Photos in the Seedream Studio album."
-          : how === "share"
-            ? "Use Save to Photos or Files in the share sheet."
-            : "Download started."
-      );
-    } catch (error) {
-      patch({
-        error: error instanceof Error ? error.message : "Download failed.",
-      });
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const generateLabel = useMemo(() => {
-    if (mode === "images") {
-      const brand = imageModel?.family === "qwen" ? "Qwen" : "Seedream";
-      return `Generate · ${brand} ${imageModel?.label}`;
-    }
-    const brand = videoModel?.family === "wan" ? "Wan" : "Seedance";
-    return `Generate · ${brand} ${videoModel?.label}`;
-  }, [mode, imageModel, videoModel]);
+  useEffect(() => {
+    const root = document.documentElement;
+    const sync = () => {
+      const vv = window.visualViewport;
+      const covered = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0;
+      root.style.setProperty("--kb", `${Math.round(covered)}px`);
+      document.body.classList.toggle("kb-open", covered > 80);
+    };
+    sync();
+    window.visualViewport?.addEventListener("resize", sync);
+    window.visualViewport?.addEventListener("scroll", sync);
+    window.addEventListener("resize", sync);
+    window.addEventListener("focusin", sync);
+    return () => {
+      window.visualViewport?.removeEventListener("resize", sync);
+      window.visualViewport?.removeEventListener("scroll", sync);
+      window.removeEventListener("resize", sync);
+      window.removeEventListener("focusin", sync);
+      root.style.removeProperty("--kb");
+      document.body.classList.remove("kb-open");
+    };
+  }, []);
 
   return (
-    <div className="app">
-      <div className="chrome">
-        <header className="top">
+    <div className="app app-chat">
+      <header className="top chat-header">
+        <div className="top-left">
+          <button className="icon-btn" type="button" aria-label="Chats" onClick={() => setChatsOpen((open) => !open)}>
+            <ChatsIcon />
+          </button>
           <div>
-            <div className="brand">Seedream Studio</div>
-            <div className="sub">Runware · Text / Image to {mode === "images" ? "Image" : "Video"}</div>
+            <div className="brand">AI Story</div>
           </div>
-          <div className="top-actions">
-            <span className={`status ${health.configured ? "on" : "off"}`}>
-              <i />
-              {health.configured ? "API Online" : "API Key"}
-            </span>
-            <button className="icon-btn" onClick={() => setSettingsOpen(true)} aria-label="Settings">
-              <Gear />
+        </div>
+        <div className="top-actions">
+          <div className="provider-toggle" role="group" aria-label="Video service">
+            <button type="button" className={provider === "runware" ? "active" : ""} onClick={() => pickProvider("runware")}>
+              Runware
+            </button>
+            <button type="button" className={provider === "venice" ? "active" : ""} onClick={() => pickProvider("venice")}>
+              Venice
             </button>
           </div>
-        </header>
-
-        <div className="mode-switch">
-          <button className={mode === "images" ? "on" : ""} onClick={() => setMode("images")}>
-            <Landscape /> Images
-          </button>
-          <button className={mode === "video" ? "on" : ""} onClick={() => setMode("video")}>
-            <Camera /> Video
-          </button>
-        </div>
-
-        <div className="mode-switch family-switch">
-          {mode === "images" ? (
-            <>
-              <button
-                className={imageFamily === "seedream" ? "on" : ""}
-                onClick={() => {
-                  setImageFamily("seedream");
-                  if (findImage(imageTab).family !== "seedream") setImageTab("seedream-5-pro");
-                }}
-              >
-                Seedream
-              </button>
-              <button
-                className={imageFamily === "qwen" ? "on" : ""}
-                onClick={() => {
-                  setImageFamily("qwen");
-                  if (findImage(imageTab).family !== "qwen") setImageTab("qwen-3");
-                }}
-              >
-                Qwen
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                className={videoFamily === "seedance" ? "on" : ""}
-                onClick={() => {
-                  setVideoFamily("seedance");
-                  if (findVideo(videoTab).family !== "seedance") setVideoTab("seedance-2-5");
-                }}
-              >
-                Seedance
-              </button>
-              <button
-                className={videoFamily === "wan" ? "on" : ""}
-                onClick={() => {
-                  setVideoFamily("wan");
-                  if (findVideo(videoTab).family !== "wan") setVideoTab("wan-3");
-                }}
-              >
-                Wan
-              </button>
-            </>
-          )}
-        </div>
-
-        <div className={`model-tabs cols-${visibleModels.length}`}>
-          {visibleModels.map((item) => (
-            <button
-              key={item.id}
-              className={item.id === activeId ? "on" : ""}
-              onClick={() => {
-                if (item.kind === "image") setImageTab(item.id);
-                else setVideoTab(item.id);
-              }}
-            >
-              <b>{item.label}</b>
-              <small>{item.subtitle}</small>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="scroll">
-      <input
-        ref={fileRef}
-        className="sr-only"
-        type="file"
-        accept="image/*"
-        multiple
-        disabled={state.images.length >= maxImages}
-        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-          const picked = Array.from(e.target.files || []);
-          e.target.value = "";
-          void onFiles(picked);
-        }}
-      />
-
-      <section className="card">
-        <div className="row-head">
-          <span>
-            <Photos /> Reference Images {imageModel?.requiresReference ? "(required)" : mode === "video" ? "(optional)" : ""}
+          <span className={`status ${health.configured ? "on" : "off"}`}>
+            <i />
+            {health.configured ? "API Online" : "API Key"}
           </span>
-          {state.images.length > 0 ? (
-            <button className="link" type="button" onClick={() => patch({ images: [] })}>
-              Clear all ({state.images.length})
-            </button>
-          ) : (
-            <small>
-              {state.images.length} / {maxImages}
-            </small>
-          )}
-        </div>
-
-        <button
-          className={`drop ${state.images.length >= maxImages ? "full" : ""}`}
-          type="button"
-          onClick={() => void pickPhotos()}
-        >
-          <Upload />
-          <strong>{adding ? "Adding photos…" : "Tap to add images"}</strong>
-          <em>
-            {imageModel?.requiresReference
-              ? "Qwen Layered needs one picture"
-              : imageModel?.family === "qwen"
-                ? "Add up to 3 · first image, second image, third image"
-                : "Allow gallery access · add several · they all go in one request"}
-          </em>
-        </button>
-
-        <div className="photo-row">
-          {state.images.length === 0 ? (
-            <div className="photo-empty">Added pictures show in this row</div>
-          ) : (
-            state.images.map((img, index) => (
-              <div key={img.id} className="thumb">
-                <img src={img.preview} alt={img.name} />
-                <span className="thumb-num">{index + 1}</span>
-                <button
-                  type="button"
-                  aria-label={`Remove image ${index + 1}`}
-                  onClick={() => patch({ images: state.images.filter((x) => x.id !== img.id) })}
-                >
-                  ×
-                </button>
-              </div>
-            ))
-          )}
-          {state.images.length > 0 && state.images.length < maxImages && (
-            <button className="thumb add" type="button" onClick={() => void pickPhotos()}>
-              +
-            </button>
-          )}
-        </div>
-        {imageModel?.family === "qwen" && imageTab !== "qwen-layered" && state.images.length >= 2 ? (
-          <p className="ref-hint">
-            Qwen needs roles in the prompt: “the first image is the person, the second image is the pose only.” It will
-            copy photo 1 if you do not say that.
-          </p>
-        ) : null}
-        <p className="privacy">
-          <Shield /> Zero-retention · inputs inline · outputs auto-wiped from Runware in 60s
-        </p>
-      </section>
-
-      <section className="card">
-        <div className="row-head">
-          <span>
-            <Pen /> Your Prompt
-          </span>
-          <button
-            className="link"
-            type="button"
-            disabled={state.busy || enhancing || state.prompt.trim().length < 2}
-            onClick={() => void onEnhancePrompt()}
-          >
-            {enhancing && !state.busy ? "Enhancing…" : "Enhance with Grok"}
+          <button className="icon-btn" onClick={() => openSettings(false)} aria-label="Settings">
+            <Gear />
           </button>
         </div>
-        <textarea
-          value={state.prompt}
-          maxLength={model.promptMax}
-          placeholder={
-            mode === "images"
-              ? imageModel?.family === "qwen" && state.images.length >= 2
-                ? "The first image is the person. The second image is the pose only. Create a new photo — do not copy either picture."
-                : "Describe how you want to transform the reference images..."
-              : videoFamily === "wan"
-                ? "Name the shot, action, camera, and audio. Quote spoken lines. Say no music if you do not want a soundtrack."
-                : "Describe the scene, motion, and camera work..."
-          }
-          onChange={(e) => patch({ prompt: e.target.value })}
-        />
-        <div className="chips">
-          {tags.map((tag) => (
-            <button key={tag} type="button" onClick={() => patch({ prompt: appendTag(state.prompt, tag) })}>
-              {tag}
-            </button>
-          ))}
-        </div>
-        <div className="toggle-row prompt-enhance">
-          <div>
-            <label>Grok before Runware</label>
-            <small>
-              {state.prompt.length} / {model.promptMax} · Grok via OpenRouter expands the prompt, then Runware generates
-            </small>
-          </div>
-          <Switch on={state.enhancePrompt} onChange={(enhancePrompt) => patch({ enhancePrompt })} />
-        </div>
-      </section>
+      </header>
 
-      {mode === "images" && !imageModel?.skipDimensions ? (
-        <section className="card">
-          <label>Aspect Ratio</label>
-          <div className="aspects">
-            {ASPECTS.map((ratio) => (
-              <button
-                key={ratio}
-                className={state.aspect === ratio ? "on" : ""}
-                type="button"
-                onClick={() => patch({ aspect: ratio })}
-              >
-                <span className={`box r-${ratio.replace(":", "-")}`} />
-                {ratio}
-              </button>
-            ))}
-          </div>
-          <div className="split">
-            <div>
-              <label>Quality</label>
-              <div className="seg">
-                {(["basic", "high"] as const).map((q) => (
-                  <button key={q} className={state.quality === q ? "on" : ""} type="button" onClick={() => patch({ quality: q })}>
-                    {q === "basic" ? "Basic" : "High"}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label>Format</label>
-              <select value={state.imageFormat} onChange={(e) => patch({ imageFormat: e.target.value as TabState["imageFormat"] })}>
-                <option>PNG</option>
-                <option>JPG</option>
-                <option>WEBP</option>
-              </select>
-            </div>
-          </div>
-        </section>
-      ) : mode === "images" ? (
-        <section className="card">
-          <p className="privacy">Qwen Layered splits one reference image into editable layers · output is TIFF</p>
-        </section>
-      ) : (
-        <section className="card">
-          {videoModel?.usesWidthHeight && state.images.length === 0 && (
-            <>
-              <label>Aspect Ratio</label>
-              <div className="aspects">
-                {WAN_ASPECTS.map((ratio) => (
-                  <button
-                    key={ratio}
-                    className={state.aspect === ratio ? "on" : ""}
-                    type="button"
-                    onClick={() => patch({ aspect: ratio })}
-                  >
-                    <span className={`box r-${ratio.replace(":", "-")}`} />
-                    {ratio}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-          <label>Resolution</label>
-          <div className="seg">
-            {videoModel!.resolutions.map((r) => (
-              <button key={r} className={state.resolution === r ? "on" : ""} type="button" onClick={() => patch({ resolution: r })}>
-                {r}
-              </button>
-            ))}
-          </div>
-          <label>Duration</label>
-          <div className="seg">
-            {videoModel!.durations.map((d) => (
-              <button key={d} className={state.duration === d ? "on" : ""} type="button" onClick={() => patch({ duration: d })}>
-                {d}s
-              </button>
-            ))}
-          </div>
-          <div className="split">
-            <div>
-              <label>Format</label>
-              <select value={state.videoFormat} onChange={(e) => patch({ videoFormat: e.target.value as TabState["videoFormat"] })}>
-                <option>MP4</option>
-                <option>WEBM</option>
-                <option>MOV</option>
-              </select>
-            </div>
-            {VIDEO_AUDIO_MODELS.includes(videoTab) && (
-              <div className="toggle-row">
-                <div>
-                  <label>Sound</label>
-                  <small>
-                    {videoFamily === "wan"
-                      ? "On = speech/SFX from the prompt, not extra music"
-                      : "Off unless you turn it on"}
-                  </small>
-                </div>
-                <Switch on={state.audio} onChange={(audio) => patch({ audio })} />
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-
-      {(mode === "images" || VIDEO_SAFETY_MODELS.includes(videoTab)) && (
-        <section className="card safety">
-          <div className="toggle-row">
-            <div>
-              <label>
-                <Warn /> Safety Checker
-              </label>
-              <small>Off by default</small>
-            </div>
-            <Switch on={state.safety} onChange={(safety) => patch({ safety })} />
-          </div>
-        </section>
-      )}
-
-      {state.error && <p className="error">{state.error}</p>}
-
-      <button className="generate" disabled={state.busy || enhancing} onClick={() => void onGenerate()}>
-        {mode === "images" ? <Spark /> : <Clap />}
-        {state.busy
-          ? enhancing
-            ? "Enhancing prompt…"
-            : state.progress
-              ? `Generating · ${state.progress}%`
-              : "Generating…"
-          : generateLabel}
-      </button>
-
-      <section className="card result">
-        <div className="row-head">
-          <span>Generated {mode === "images" ? "Image" : "Video"}</span>
-          {state.result?.cost != null && <small>${state.result.cost.toFixed(4)}</small>}
-        </div>
-        {state.result ? (
-          <>
-            {state.result.kind === "video" ? (
-              <video src={state.result.url} controls playsInline />
-            ) : (
-              <img src={state.result.url} alt="Generated output" />
-            )}
-            <button className="download" type="button" disabled={saving} onClick={() => void onDownload()}>
-              {saving ? "Saving…" : isNativeApp() ? "Save to gallery" : "Download"}
-            </button>
-            {savedNote && <p className="saved-note">{savedNote}</p>}
-          </>
-        ) : (
-          <div className="placeholder">{state.busy ? "Working on it…" : "Your result will show up here."}</div>
-        )}
-      </section>
-      <div className="nav-spacer" aria-hidden="true" />
+      <div className="scroll chat-mode">
+        <AgentView chatsOpen={chatsOpen} onChatsOpenChange={setChatsOpen} onOpenRunwareCleanup={() => openSettings(true)} />
       </div>
 
       {settingsOpen && (
@@ -639,6 +141,8 @@ export default function App() {
               e.preventDefault();
               if (keyDraft && !keyDraft.includes("•")) saveApiKey(keyDraft);
               if (grokDraft && !grokDraft.includes("•")) saveOpenRouterKey(grokDraft);
+              if (veniceDraft && !veniceDraft.includes("•")) saveVeniceKey(veniceDraft);
+              if (!veniceDraft) saveVeniceKey("");
               setSettingsOpen(false);
               void checkHealth().then(setHealth);
             }}
@@ -663,7 +167,79 @@ export default function App() {
               placeholder="sk-or-v1-..."
               onChange={(e) => setGrokDraft(e.target.value)}
             />
-            <button type="submit">Save</button>
+            <label>Venice API key</label>
+            <input
+              type="password"
+              autoComplete="off"
+              value={veniceDraft}
+              placeholder="VENICE-..."
+              onChange={(e) => setVeniceDraft(e.target.value)}
+            />
+            <p className="sheet-note">
+              The Runware / Venice switch at the top picks who makes videos (Wan 3.0, Wan 3.0 Prime, MiniMax H3 Max). Pictures and
+              prompt help stay the same.
+            </p>
+            <button
+              type="button"
+              className="ghost-btn"
+              disabled={veniceRecoverBusy}
+              onClick={() => {
+                setVeniceRecoverBusy(true);
+                setVeniceRecoverStatus("");
+                void recoverVeniceVideos()
+                  .then(({ tried, saved, errors }) => {
+                    if (!tried) setVeniceRecoverStatus("No unsaved Venice videos.");
+                    else
+                      setVeniceRecoverStatus(
+                        `Saved ${saved} of ${tried} to Gallery.${errors.length ? ` ${errors.join(" · ")}` : ""}`
+                      );
+                  })
+                  .catch((error) => setVeniceRecoverStatus(error instanceof Error ? error.message : "Recover failed."))
+                  .finally(() => setVeniceRecoverBusy(false));
+              }}
+            >
+              {veniceRecoverBusy ? "Recovering…" : `Recover Venice videos (${pendingVeniceCount()})`}
+            </button>
+            {veniceRecoverStatus ? <p className="sheet-note">{veniceRecoverStatus}</p> : null}
+            <hr className="sheet-divider" />
+            <h3 id="runware-server-photos">Delete photos on Runware server</h3>
+            <p className="sheet-note">
+              Paste links from Runware&apos;s site (<code>mm.runware.ai/.../id/…</code>) or the file UUID, one per line. New Wan uploads are removed automatically after each video.
+            </p>
+            <label htmlFor="runware-purge">Paste Runware links or IDs here</label>
+            <textarea
+              id="runware-purge"
+              ref={runwarePurgeRef}
+              rows={3}
+              placeholder="https://mm.runware.ai/media-storage/.../id/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+              value={runwarePurgeDraft}
+              onChange={(e) => setRunwarePurgeDraft(e.target.value)}
+            />
+            <button
+              type="button"
+              className="ghost"
+              disabled={runwarePurgeBusy || !health.configured}
+              onClick={() => {
+                setRunwarePurgeBusy(true);
+                setRunwarePurgeStatus("");
+                void purgeRunwareServerCopies(runwarePurgeDraft)
+                  .then(({ requested, removed }) => {
+                    setRunwarePurgeStatus(
+                      requested
+                        ? `Sent delete for ${requested} file${requested === 1 ? "" : "s"} (${removed} accepted by Runware).`
+                        : "No Runware file IDs found on this phone. Paste links from the Runware site above, or open a photo there and copy its URL."
+                    );
+                  })
+                  .catch((error) => {
+                    setRunwarePurgeStatus(error instanceof Error ? error.message : "Could not delete Runware files.");
+                  })
+                  .finally(() => setRunwarePurgeBusy(false));
+              }}
+            >
+              {runwarePurgeBusy ? "Deleting…" : "Delete Runware copies this phone knows"}
+            </button>
+            {runwarePurgeStatus ? <p className="sheet-status">{runwarePurgeStatus}</p> : null}
+            <button type="submit">Save API keys</button>
             <button
               type="button"
               className="ghost"
@@ -678,6 +254,7 @@ export default function App() {
             >
               Clear device keys
             </button>
+            <p className="sheet-build">App build {appBuildLabel}</p>
           </form>
         </div>
       )}
@@ -685,11 +262,11 @@ export default function App() {
   );
 }
 
-function Switch({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+function ChatsIcon() {
   return (
-    <button type="button" className={`switch ${on ? "on" : ""}`} onClick={() => onChange(!on)} aria-pressed={on}>
-      <span />
-    </button>
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
+      <path d="M4 6h16M4 12h16M4 18h10" strokeLinecap="round" />
+    </svg>
   );
 }
 
@@ -697,76 +274,7 @@ function Gear() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
       <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.7.9 1.2 1.6 1.3H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
-    </svg>
-  );
-}
-function Landscape() {
-  return (
-    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <rect x="3" y="6" width="18" height="12" rx="2" />
-      <path d="m3 15 5-5 4 4 3-3 6 6" />
-    </svg>
-  );
-}
-function Camera() {
-  return (
-    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <rect x="3" y="7" width="13" height="10" rx="2" />
-      <path d="m16 10 5-3v10l-5-3z" />
-    </svg>
-  );
-}
-function Photos() {
-  return (
-    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <rect x="4" y="6" width="14" height="12" rx="2" />
-      <path d="M8 18h12V8" />
-    </svg>
-  );
-}
-function Upload() {
-  return (
-    <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M12 16V7M8 10l4-4 4 4" />
-      <path d="M5 18h14" />
-    </svg>
-  );
-}
-function Shield() {
-  return (
-    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M12 3 5 6v6c0 5 3.4 7.7 7 9 3.6-1.3 7-4 7-9V6z" />
-      <path d="m9 12 2 2 4-4" />
-    </svg>
-  );
-}
-function Pen() {
-  return (
-    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M4 20h4L19 9l-4-4L4 16z" />
-    </svg>
-  );
-}
-function Warn() {
-  return (
-    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M12 3 2 20h20L12 3z" />
-      <path d="M12 9v5M12 17h.01" />
-    </svg>
-  );
-}
-function Spark() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-      <path d="M12 2l1.4 6.6L20 10l-6.6 1.4L12 18l-1.4-6.6L4 10l6.6-1.4z" />
-    </svg>
-  );
-}
-function Clap() {
-  return (
-    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8">
-      <path d="M4 10h16v10H4zM7 6l10 4M9 4l10 4" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.7.9 1.2 1.6 1.3H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
     </svg>
   );
 }

@@ -149,6 +149,21 @@ export const VIDEO_MODELS: VideoModel[] = [
     audioInSettings: true,
     usesWidthHeight: true,
   },
+  {
+    // Venice only (no Runware route in this app).
+    id: "minimax-h3-max",
+    kind: "video",
+    family: "minimax",
+    airId: "venice:minimax-h3-max",
+    label: "H3 Max",
+    subtitle: "MiniMax · Venice",
+    maxImages: 10,
+    promptMax: 4000,
+    durations: [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    resolutions: ["480p", "720p", "1080p"],
+    supportsReferenceImages: true,
+    audioInSettings: true,
+  },
 ];
 
 export const IMAGE_TAGS = [
@@ -314,6 +329,9 @@ export const VIDEO_SAFETY_MODELS: VideoTabId[] = ["seedance-2-5", "wan-3", "wan-
 export const VIDEO_AUDIO_MODELS: VideoTabId[] = ["seedance-2-5", "seedance-2-0", "wan-3", "wan-3-prime"];
 export const VIDEO_WAN_MODELS: VideoTabId[] = ["wan-3", "wan-3-prime"];
 
+export const AGENT_IMAGE_TABS: ImageTabId[] = ["qwen-3-pro"];
+export const AGENT_VIDEO_TABS: VideoTabId[] = ["wan-3", "wan-3-prime", "minimax-h3-max"];
+
 export function imageModelsFor(family: ImageFamily) {
   return IMAGE_MODELS.filter((model) => model.family === family);
 }
@@ -335,15 +353,8 @@ export function wanSize(aspect: Aspect, resolution: "480p" | "720p" | "1080p") {
 export function wanPositivePrompt(prompt: string, audio: boolean) {
   const text = prompt.trim();
   if (!audio) return text;
-  const lower = text.toLowerCase();
-  const mentionsMusic = /\b(music|soundtrack|score|song|songs|beat|bpm|melody)\b/.test(lower);
-  const mentionsAudio = /\b(audio|sound|speech|says|said|saying|dialogue|voice|foley|ambience|ambient|spoken)\b/.test(
-    lower
-  );
-  const extras: string[] = [];
-  if (!mentionsMusic) extras.push("Audio: no background music, no soundtrack, no songs.");
-  if (!mentionsAudio) extras.push("Use only natural speech, Foley, and room ambience that match the prompt.");
-  return extras.length ? `${text} ${extras.join(" ")}` : text;
+  if (/\b(audio|sound|speech|says|said|saying|speak|dialogue|voice|foley|ambience|ambient|spoken)\b/i.test(text)) return text;
+  return `${text} Include room ambience and Foley that match the scene. Do not add spoken words or dialogue.`;
 }
 
 const QWEN_REF_MAX_PIXELS = 2_250_000;
@@ -365,23 +376,17 @@ export function fitQwenRefSize(width: number, height: number) {
 export function qwenPositivePrompt(prompt: string, refCount: number) {
   let text = prompt.trim();
   if (refCount < 1) return text;
-
   text = text
     .replace(/\bimages?\s*#?\s*1\b/gi, "the first image")
     .replace(/\bimages?\s*#?\s*2\b/gi, "the second image")
     .replace(/\bimages?\s*#?\s*3\b/gi, "the third image")
     .replace(/\bthe\s+the\s+(first|second|third)\s+image\b/gi, "the $1 image");
-
-  if (refCount < 2) return text;
-
-  if (/\bpose\b/i.test(text)) {
-    text = `${text} Keep the identity, face, body, and clothes from the first image. Use only the body pose from the second image. Ignore the face and clothes in the second image.`;
-  }
-  if (!/\b(compose|combine|create (one |a )?new|new (photo|image|photograph))\b/i.test(text)) {
-    text = `${text} Create one new image using every reference.`;
-  }
-  if (!/\bdo not (copy|return|output)\b/i.test(text)) {
-    text = `${text} Do not return a copy of any input image.`;
+  if (refCount >= 2 && /STRICT IDENTITY|pose photo|pose only/i.test(text)) {
+    if (refCount === 2) {
+      text = `The first image is the people named for identity. Copy them exactly. The second image is the pose they named. Match that body pose. Do not copy the pose photo's face, hair, clothes, or identity.\n${text}`;
+    } else {
+      text = `The first ${refCount - 1} images are the people named for identity. Copy them exactly. The last image is the pose they named. Match that body pose. Do not copy the pose photo's face, hair, clothes, or identity.\n${text}`;
+    }
   }
   return text;
 }
@@ -394,9 +399,9 @@ export function emptyTabState(kind: "image" | "video"): TabState {
     quality: "basic",
     imageFormat: "PNG",
     videoFormat: "MP4",
-    resolution: kind === "video" ? "720p" : "480p",
-    duration: 5,
-    audio: false,
+    resolution: "480p",
+    duration: 10,
+    audio: true,
     safety: false,
     enhancePrompt: true,
     busy: false,

@@ -11,20 +11,68 @@ import {
   wanPositivePrompt,
   wanSize,
 } from "./models";
-import { fileToDataUri, isImageFile, sleep, uuid } from "./media";
-import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
+import { ensureWanAudioDataUri, fileToDataUri, fitImageDataUriToAspect, isImageFile, isUsableMediaUrl, isUsableReferenceImage, uuid } from "./media";
+import {
+  collectRunwareIdsOnDevice,
+  forgetTrackedRunwareUploads,
+  parseRunwareIdsFromUserInput,
+  rememberRunwareUploads,
+} from "./runware-tracker";
+import { nativePollRunware, nativeSleep, withKeepAlive } from "./keep-alive";
+import { gallerySourceForResult, isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
+import { generateVeniceVideo, hasLocalVeniceKey, loadVideoProvider, veniceSupports } from "./venice";
 
 const RUNWARE = "https://api.runware.ai/v1";
 const OPENROUTER = "https://openrouter.ai/api/v1/chat/completions";
 const KEY_STORAGE = "runware_api_key";
 const OPENROUTER_KEY_STORAGE = "openrouter_api_key";
-const GROK_MODEL = "x-ai/grok-4.6";
+export const BRAIN_MODELS = [
+  { id: "google/gemma-4-31b-it", label: "Gemma 4 31B" },
+  { id: "x-ai/grok-4.6", label: "Grok 4.6" },
+] as const;
+
+export type BrainModelId = (typeof BRAIN_MODELS)[number]["id"];
+export const DEFAULT_BRAIN: BrainModelId = "google/gemma-4-31b-it";
+const BRAIN_STORAGE = "seedream_agent_brain";
 const TTL = 60;
+
+const GEMINI_SAFETY = [
+  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+  { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" },
+];
+
+export function loadBrainModel(): BrainModelId {
+  const stored = (typeof localStorage !== "undefined" && localStorage.getItem(BRAIN_STORAGE)) || "";
+  return BRAIN_MODELS.some((item) => item.id === stored) ? (stored as BrainModelId) : DEFAULT_BRAIN;
+}
+
+export function saveBrainModel(id: BrainModelId) {
+  localStorage.setItem(BRAIN_STORAGE, id);
+}
+
+export function brainFromText(text: string): BrainModelId | null {
+  if (/\b(gemma|modelrun)\b/i.test(text)) return "google/gemma-4-31b-it";
+  if (/\bgrok\b/i.test(text)) return "x-ai/grok-4.6";
+  return null;
+}
+
+function isGemini(model: string) {
+  return model.startsWith("google/gemini");
+}
+
+function providerFor(model: string) {
+  if (model.startsWith("google/gemma")) return { only: ["modelrun/fp4"], allow_fallbacks: false };
+  if (isGemini(model)) return { data_collection: "deny" as const, zdr: true };
+  return { order: ["xai", "x-ai"], allow_fallbacks: false, data_collection: "deny" as const, zdr: true };
+}
 
 type RunwareEnvelope = {
   data?: Array<Record<string, unknown>>;
-  errors?: Array<{ code?: string; message?: string; taskUUID?: string }>;
+  errors?: Array<{ code?: string; message?: string; taskUUID?: string; parameter?: string }>;
 };
 
 export type Health = { ok: boolean; configured: boolean; grok: boolean; native: boolean };
@@ -66,7 +114,55 @@ export function hasLocalOpenRouterKey() {
 }
 
 function errorMessage(payload: RunwareEnvelope, fallback = "Runware request failed") {
-  return payload.errors?.map((e) => e.message).filter(Boolean).join(" · ") || fallback;
+  const parts = (payload.errors || [])
+    .map((e) => {
+      const extra = [e.code, e.parameter].filter(Boolean).join(" ");
+      return [e.message || "", extra].filter(Boolean).join(" · ");
+    })
+    .filter(Boolean);
+  if (parts.length) return parts.join(" · ");
+  try {
+    const raw = JSON.stringify(payload);
+    if (raw && raw !== "{}") return `${fallback}: ${raw.slice(0, 400)}`;
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
+
+function rowErrorMessage(row: Record<string, unknown>) {
+  const err = row.error;
+  if (typeof err === "string" && err.trim()) return err.trim();
+  if (err && typeof err === "object") {
+    const obj = err as Record<string, unknown>;
+    const parts = [obj.message, obj.error, obj.code].filter((value) => typeof value === "string" && value.trim()) as string[];
+    if (parts.length) return parts.join(" · ");
+    try {
+      return JSON.stringify(err);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (typeof row.message === "string" && row.message.trim()) return row.message.trim();
+  if (typeof row.errorMessage === "string" && row.errorMessage.trim()) return row.errorMessage.trim();
+  return "Generation failed.";
+}
+
+function scrubWanPrompt(
+  prompt: string,
+  slots: { frames?: boolean; refs?: boolean; video?: boolean; audio?: boolean; aspect?: TabState["aspect"] }
+) {
+  let text = prompt.trim();
+  if (!slots.refs) text = text.replace(/\bImages?\s*\d+\b/gi, slots.frames ? "the opening picture" : "the subject");
+  if (!slots.video) text = text.replace(/\bVideos?\s*\d+\b/gi, "the motion");
+  if (!slots.audio) text = text.replace(/\bAudios?\s*\d+\b/gi, "the sound");
+  if (slots.aspect === "9:16") {
+    text = text.replace(/\b(480p|720p|1080p)\s+landscape\b/gi, `$1 vertical`).replace(/\blandscape\b/gi, "vertical");
+  }
+  if (slots.aspect === "16:9") {
+    text = text.replace(/\b(480p|720p|1080p)\s+vertical\b/gi, `$1 landscape`).replace(/\bvertical\b/gi, "landscape");
+  }
+  return text;
 }
 
 async function postDirect(tasks: unknown[], key: string): Promise<RunwareEnvelope> {
@@ -81,7 +177,7 @@ async function postDirect(tasks: unknown[], key: string): Promise<RunwareEnvelop
       connectTimeout: 600000,
       readTimeout: 600000,
     });
-    const data = res.data as RunwareEnvelope;
+    const data = parseRunwareBody(res.data);
     if (res.status >= 400) {
       throw new Error(errorMessage(data, `Runware HTTP ${res.status}`));
     }
@@ -99,6 +195,18 @@ async function postDirect(tasks: unknown[], key: string): Promise<RunwareEnvelop
   const payload = (await res.json()) as RunwareEnvelope;
   if (!res.ok) throw new Error(errorMessage(payload, `Runware HTTP ${res.status}`));
   return payload;
+}
+
+function parseRunwareBody(data: unknown): RunwareEnvelope {
+  if (typeof data === "string") {
+    try {
+      return JSON.parse(data) as RunwareEnvelope;
+    } catch {
+      return { errors: [{ message: data }] };
+    }
+  }
+  if (data && typeof data === "object") return data as RunwareEnvelope;
+  return { errors: [{ message: "Empty Runware response." }] };
 }
 
 async function loadDeviceConfig() {
@@ -155,7 +263,7 @@ export async function checkHealth(): Promise<Health> {
     const res = await fetch("/api/health");
     if (res.ok) {
       const body = (await res.json()) as { ok?: boolean; configured?: boolean; grok?: boolean };
-      const configured = Boolean(body.configured) || hasLocalApiKey();
+      const configured = Boolean(body.configured) || hasLocalApiKey() || hasLocalVeniceKey();
       const grok = Boolean(body.grok) || hasLocalOpenRouterKey();
       return { ok: true, configured, grok, native: Capacitor.isNativePlatform() };
     }
@@ -163,8 +271,8 @@ export async function checkHealth(): Promise<Health> {
     /* proxy unavailable — APK / direct mode */
   }
   return {
-    ok: hasLocalApiKey(),
-    configured: hasLocalApiKey(),
+    ok: hasLocalApiKey() || hasLocalVeniceKey(),
+    configured: hasLocalApiKey() || hasLocalVeniceKey(),
     grok: hasLocalOpenRouterKey(),
     native: Capacitor.isNativePlatform(),
   };
@@ -180,8 +288,107 @@ function isFinishedRow(row: Record<string, unknown>) {
   );
 }
 
+async function uploadRunwareMedia(media: string): Promise<string> {
+  const value = media.trim();
+  if (!value) throw new Error("Missing file.");
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) return value;
+  if (isUsableMediaUrl(value) && /^https?:\/\//i.test(value)) return value;
+  const payload = await postRunware([
+    {
+      taskType: "mediaStorage",
+      taskUUID: uuid(),
+      operation: "upload",
+      media: value,
+    },
+  ]);
+  if (payload.errors?.length) throw new Error(errorMessage(payload, "Could not upload the file."));
+  const row = payload.data?.[0] || {};
+  const url = String(row.mediaURL || "");
+  const id = String(row.mediaUUID || "");
+  if (/^https?:\/\//i.test(url)) {
+    rememberRunwareUploads(collectUploadedRunwareIds([url, id]));
+    return url;
+  }
+  if (id) {
+    rememberRunwareUploads(collectUploadedRunwareIds([id]));
+    return id;
+  }
+  if (url) {
+    rememberRunwareUploads(collectUploadedRunwareIds([url]));
+    return url;
+  }
+  throw new Error("Could not upload the file.");
+}
+
+function isRunwareId(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function hostedWanImage(value: string) {
+  if (isUsableMediaUrl(value) && /^https?:\/\//i.test(value)) return value;
+  if (isRunwareId(value)) return value;
+  return "";
+}
+
+async function uploadRunwareImage(image: string): Promise<string> {
+  const value = image.trim();
+  if (!value) throw new Error("Missing image.");
+  const already = hostedWanImage(value);
+  if (already) return already;
+  // Use mediaStorage only. The old imageUpload task returns an imageUUID that
+  // mediaStorage "delete" cannot remove (Runware keeps it ~30 days after last use).
+  const stored = hostedWanImage(await uploadRunwareMedia(value));
+  if (stored) return stored;
+  throw new Error("Could not upload the photo to Wan.");
+}
+
+/** Resize/crop a still to a Wan-friendly JPEG data URI (no upload). */
+async function fitWanImage(image: string, aspect: TabState["aspect"]): Promise<string> {
+  const fitted = await fitImageDataUriToAspect(image, aspect);
+  if (/^data:image\/(heic|heif)/i.test(fitted)) {
+    throw new Error("Wan needs a JPEG or PNG. That photo is HEIC.");
+  }
+  if (!isUsableReferenceImage(fitted) && !hostedWanImage(fitted)) {
+    throw new Error("Wan could not read that photo. Attach a JPEG or PNG.");
+  }
+  return fitted;
+}
+
+/** Wan rejected inline stills → worth retrying with hosted uploads. */
+function isWanInputRejection(error: unknown) {
+  const msg = error instanceof Error ? error.message : String(error || "");
+  return /invalid ?parameter|invalid.*(image|input|frame|reference)|(image|input|frame|reference).*invalid/i.test(msg);
+}
+
 function uuidFromMediaUrl(url: string) {
   return /([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i.exec(url)?.[1];
+}
+
+/** Runware media UUIDs returned right after this app uploaded inputs (not inline data URIs). */
+function collectUploadedRunwareIds(values: string[]) {
+  const ids = new Set<string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.startsWith("data:")) continue;
+    if (isRunwareId(trimmed)) {
+      ids.add(trimmed);
+      continue;
+    }
+    const fromUrl = uuidFromMediaUrl(trimmed);
+    if (fromUrl) ids.add(fromUrl);
+  }
+  return [...ids];
+}
+
+async function wipeUploadedInputs(ids: string[]) {
+  const unique = [...new Set(ids.filter(Boolean))];
+  const deleted: string[] = [];
+  for (const id of unique) {
+    if (await deleteMedia(id)) deleted.push(id);
+    else console.warn("Runware delete failed, keeping id for Settings cleanup:", id);
+  }
+  // Only forget ids Runware confirmed deleted, so Settings → Delete can retry the rest.
+  if (deleted.length) forgetTrackedRunwareUploads(deleted);
 }
 
 function collectWipeIds(rows: Array<Record<string, unknown>>) {
@@ -219,20 +426,24 @@ function scheduleWipe(ids: Array<string | undefined>) {
   }
 }
 
-type FinishedTask = { row: Record<string, unknown>; wipeIds: string[] };
+type FinishedTask = { row: Record<string, unknown>; wipeIds: string[]; localPath?: string };
 
 async function poll(taskUUID: string, onProgress?: (n: number) => void): Promise<FinishedTask> {
+  const key = storedKey();
+  if (key && Capacitor.isNativePlatform()) {
+    const native = await nativePollRunware(taskUUID, key);
+    if (native) return native;
+  }
   let delay = 2000;
   const deadline = Date.now() + 15 * 60 * 1000;
   while (Date.now() < deadline) {
-    await sleep(delay);
+    await nativeSleep(delay);
     const payload = await postRunware([{ taskType: "getResponse", taskUUID }]);
     if (payload.errors?.length) throw new Error(errorMessage(payload));
     const rows = payload.data || [];
     const failed = rows.find((row) => row.status === "error");
     if (failed) {
-      const err = failed.error as { message?: string } | undefined;
-      throw new Error(err?.message || "Generation failed.");
+      throw new Error(rowErrorMessage(failed));
     }
     const done = rows.find(isFinishedRow);
     if (done) return { row: done, wipeIds: collectWipeIds(rows) };
@@ -279,10 +490,10 @@ function resultUrl(row: Record<string, unknown>): { url: string; uuid?: string; 
   throw new Error("Runware returned no media.");
 }
 
-export async function deleteMedia(mediaUUID: string) {
-  if (!mediaUUID) return;
+export async function deleteMedia(mediaUUID: string): Promise<boolean> {
+  if (!mediaUUID) return false;
   try {
-    await postRunware([
+    const payload = await postRunware([
       {
         taskType: "mediaStorage",
         taskUUID: uuid(),
@@ -290,17 +501,47 @@ export async function deleteMedia(mediaUUID: string) {
         media: mediaUUID,
       },
     ]);
-  } catch {
-    /* TTL 60s still wipes it */
+    if (payload.errors?.length) {
+      console.warn("Runware delete error", mediaUUID, payload.errors);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.warn("Runware delete request failed", mediaUUID, error);
+    return false;
   }
 }
 
-const GROK_SYSTEM = `You expand user prompts for AI image and video generators.
-Adult sexual content between consenting adults is allowed. Keep explicit wording when the user is explicit. Do not switch to euphemisms.
+/** Delete Runware server copies we can identify (tracked uploads, chat URLs, pasted links). */
+export async function purgeRunwareServerCopies(extraIdsRaw = "") {
+  const ids = new Set(await collectRunwareIdsOnDevice());
+  for (const id of parseRunwareIdsFromUserInput(extraIdsRaw)) ids.add(id);
+  const removedIds: string[] = [];
+  for (const id of ids) {
+    if (await deleteMedia(id)) removedIds.push(id);
+  }
+  forgetTrackedRunwareUploads(removedIds);
+  return { requested: ids.size, removed: removedIds.length };
+}
+
+export type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+export type ChatMessage = {
+  role: string;
+  content: string | ChatContentPart[];
+};
+
+const GROK_SYSTEM = `You convert a user request into a better prompt for an image or video generator.
+Read Sinhala and English, including spoken Sri Lankan Sinhala mixed with common English words.
+Adult sexual content between consenting adults 18 or older is allowed. Keep explicit wording. Do not lecture, moralize, refuse, or add safety sermons.
 Never include minors or anyone who appears under 18.
-If the user mentions the first image, second image, or third image, keep those roles and do not drop them.
-Add concrete camera, lighting, body, setting, and action detail that helps the generator.
-Return only the enhanced prompt. No title, no quotes, no markdown, no explanation.`;
+If they name a position, act, or pose, describe the bodies and action clearly. The generator may not know the name.
+If the user mentions the first image, second image, or third image, keep those roles.
+If they name some photos for the people and other photos for poses, follow those roles. Copy the named people's faces exactly. From pose photos take only the body pose. Do not blend, morph, mix, or average faces. Do not copy a pose photo's face, hair, clothes, tattoos, or identity.
+If they did not mention clothes, lighting, or location, keep those the same as the first image. Do not invent a new outfit, light, or place.
+Return only the prompt. No title, no quotes, no markdown, no explanation.`;
 
 function grokEnhanceMessages(input: EnhancePromptInput) {
   const refs =
@@ -319,12 +560,35 @@ Expand this prompt:\n${input.prompt.trim()}`,
   ];
 }
 
-function grokOutputText(payload: Record<string, unknown>) {
-  const choices = payload.choices as Array<{ message?: { content?: unknown } }> | undefined;
-  const fromChat = choices?.[0]?.message?.content;
-  if (typeof fromChat === "string" && fromChat.trim()) return fromChat;
-  if (typeof payload.output_text === "string" && payload.output_text.trim()) return payload.output_text;
+function collectText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value) return "";
+  if (Array.isArray(value)) return value.map(collectText).join("");
+  if (typeof value === "object") {
+    const part = value as Record<string, unknown>;
+    return collectText(part.text ?? part.content ?? part.output_text ?? "");
+  }
   return "";
+}
+
+function grokOutputText(payload: Record<string, unknown>) {
+  const choices = payload.choices as Array<{ text?: unknown; message?: Record<string, unknown> }> | undefined;
+  const message = choices?.[0]?.message;
+  const content = collectText(message?.content || choices?.[0]?.text || payload.output_text).trim();
+  if (content) return content;
+  const reasoning = collectText(message?.reasoning || message?.reasoning_content).trim();
+  if (reasoning && /[{[]/.test(reasoning)) return reasoning;
+  return "";
+}
+
+function emptyChatError(payload: Record<string, unknown>) {
+  const choices = payload.choices as Array<{ finish_reason?: string; message?: { refusal?: string } }> | undefined;
+  const finish = choices?.[0]?.finish_reason || "";
+  const refusal = choices?.[0]?.message?.refusal?.trim();
+  if (refusal) return refusal;
+  if (finish === "length") return "The chat model ran out of space. Send that again.";
+  if (payload.error) return grokErrorMessage(payload, "The chat model came back empty. Send that again.");
+  return "The chat model came back empty. Send that again.";
 }
 
 function cleanEnhancedPrompt(text: string, promptMax: number) {
@@ -342,15 +606,24 @@ function grokErrorMessage(payload: Record<string, unknown>, fallback: string) {
   return fallback;
 }
 
-function enhanceBody(messages: Array<{ role: string; content: string }>, maxTokens: number) {
-  return {
-    model: GROK_MODEL,
+function enhanceBody(messages: ChatMessage[], maxTokens: number, model: string, temperature = 0.7) {
+  const thinking = isGemini(model) ? Math.min(1536, Math.max(512, Math.floor(maxTokens * 0.3))) : 0;
+  const body: Record<string, unknown> = {
+    model,
     messages,
     stream: false,
-    temperature: 0.7,
-    max_tokens: maxTokens,
-    provider: { order: ["x-ai"], allow_fallbacks: false },
+    temperature,
+    max_tokens: maxTokens + thinking,
+    provider: providerFor(model),
   };
+  if (isGemini(model)) {
+    body.safety_settings = GEMINI_SAFETY;
+    body.reasoning = {
+      max_tokens: thinking,
+      exclude: true,
+    };
+  }
+  return body;
 }
 
 function openRouterHeaders(key: string) {
@@ -358,12 +631,11 @@ function openRouterHeaders(key: string) {
     Authorization: `Bearer ${key}`,
     "Content-Type": "application/json",
     "HTTP-Referer": "https://github.com/srican1982/seedream-studio",
-    "X-Title": "Seedream Studio",
+    "X-Title": "AI Story",
   };
 }
 
-async function postOpenRouterDirect(messages: Array<{ role: string; content: string }>, maxTokens: number, key: string) {
-  const body = enhanceBody(messages, maxTokens);
+async function openRouterRequest(body: Record<string, unknown>, key: string) {
   if (Capacitor.isNativePlatform()) {
     const res = await CapacitorHttp.post({
       url: OPENROUTER,
@@ -372,7 +644,10 @@ async function postOpenRouterDirect(messages: Array<{ role: string; content: str
       connectTimeout: 120000,
       readTimeout: 120000,
     });
-    const data = (typeof res.data === "string" ? JSON.parse(res.data) : res.data) as Record<string, unknown>;
+    const data =
+      typeof res.data === "string"
+        ? (JSON.parse(res.data) as Record<string, unknown>)
+        : ((res.data || {}) as Record<string, unknown>);
     if (res.status >= 400) throw new Error(grokErrorMessage(data, `OpenRouter HTTP ${res.status}`));
     return data;
   }
@@ -386,19 +661,42 @@ async function postOpenRouterDirect(messages: Array<{ role: string; content: str
   return data;
 }
 
-async function postOpenRouter(messages: Array<{ role: string; content: string }>, maxTokens: number) {
+async function postOpenRouterDirect(
+  messages: ChatMessage[],
+  maxTokens: number,
+  key: string,
+  model: string,
+  temperature = 0.7
+) {
+  const body = enhanceBody(messages, maxTokens, model, temperature);
+  try {
+    return await openRouterRequest(body, key);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!/no endpoints? found/i.test(message)) throw error;
+    const { provider: _ignored, ...fallback } = body;
+    return openRouterRequest(fallback, key);
+  }
+}
+
+async function postOpenRouter(
+  messages: ChatMessage[],
+  maxTokens: number,
+  model = loadBrainModel(),
+  temperature = 0.7
+) {
   await ensureDeviceConfig();
   const missingKey = "Add your OpenRouter API key in Settings.";
   try {
     const res = await fetch("/api/enhance", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(enhanceBody(messages, maxTokens)),
+      body: JSON.stringify(enhanceBody(messages, maxTokens, model, temperature)),
     });
     if (res.status !== 404 && res.status !== 502) {
       const payload = (await res.json()) as Record<string, unknown>;
       if (payload.error === "missingOpenRouterKey") {
-        if (storedOpenRouterKey()) return postOpenRouterDirect(messages, maxTokens, storedOpenRouterKey());
+        if (storedOpenRouterKey()) return postOpenRouterDirect(messages, maxTokens, storedOpenRouterKey(), model, temperature);
         throw new Error(missingKey);
       }
       if (!res.ok) throw new Error(grokErrorMessage(payload, `OpenRouter HTTP ${res.status}`));
@@ -408,27 +706,63 @@ async function postOpenRouter(messages: Array<{ role: string; content: string }>
     if (storedOpenRouterKey() || Capacitor.isNativePlatform()) {
       const key = storedOpenRouterKey();
       if (!key) throw new Error(missingKey);
-      return postOpenRouterDirect(messages, maxTokens, key);
+      return postOpenRouterDirect(messages, maxTokens, key, model, temperature);
     }
     throw error instanceof Error ? error : new Error("Could not reach the OpenRouter proxy.");
   }
   const key = storedOpenRouterKey();
   if (!key) throw new Error(missingKey);
-  return postOpenRouterDirect(messages, maxTokens, key);
+  return postOpenRouterDirect(messages, maxTokens, key, model, temperature);
 }
 
 export async function enhancePrompt(input: EnhancePromptInput): Promise<string> {
   const source = input.prompt.trim();
   if (source.length < 2) throw new Error("Write a prompt first.");
   const maxTokens = Math.min(2048, Math.max(256, Math.ceil(input.promptMax / 2.5)));
-  const payload = await postOpenRouter(grokEnhanceMessages(input), maxTokens);
-  const text = cleanEnhancedPrompt(grokOutputText(payload), input.promptMax);
-  if (!text) throw new Error("Grok returned no enhanced prompt.");
-  return text;
+  const messages = grokEnhanceMessages(input);
+  for (const extra of [0, 1024]) {
+    const payload = await postOpenRouter(messages, maxTokens + extra);
+    const text = cleanEnhancedPrompt(grokOutputText(payload), input.promptMax);
+    if (text) return text;
+  }
+  throw new Error("The chat model came back empty. Send that again.");
 }
 
 export function canAutoEnhancePrompt(prompt: string) {
   return prompt.trim().length >= 2;
+}
+
+export async function completeChat(
+  system: string,
+  user: string | ChatContentPart[],
+  maxTokens = 2500,
+  model = loadBrainModel(),
+  temperature = 0.4
+): Promise<string> {
+  return withKeepAlive("Thinking… You can switch apps.", async () => {
+    const messages: ChatMessage[] = [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ];
+    let lastEmpty = "The chat model came back empty. Send that again.";
+    for (const extra of [0, 2048]) {
+      try {
+        const payload = await postOpenRouter(messages, maxTokens + extra, model, extra ? 0.2 : temperature);
+        const text = grokOutputText(payload).trim();
+        if (text) return text;
+        lastEmpty = emptyChatError(payload);
+      } catch (error) {
+        lastEmpty = error instanceof Error ? error.message : lastEmpty;
+        if (!extra) continue;
+        throw error instanceof Error ? error : new Error(lastEmpty);
+      }
+    }
+    throw new Error(lastEmpty);
+  });
+}
+
+export async function completeGrok(system: string, user: string, maxTokens = 2500): Promise<string> {
+  return completeChat(system, user, maxTokens, loadBrainModel());
 }
 
 export async function generateImage(
@@ -437,7 +771,7 @@ export async function generateImage(
   onProgress?: (n: number) => void
 ): Promise<StudioResult> {
   const model = findImage(tab);
-  const refs = state.images.map((img) => img.dataUri).filter(Boolean);
+  const refs = state.images.map((img) => img.dataUri).filter(isUsableReferenceImage);
   if (model.requiresReference && refs.length < 1) {
     throw new Error("Add one reference image for Qwen Layered.");
   }
@@ -470,24 +804,9 @@ export async function generateImage(
     task.settings = { thinking: true };
   }
 
-  const { row, wipeIds } = await runTask(task, onProgress);
-  const media = resultUrl(row);
-  scheduleWipe([...wipeIds, media.uuid]);
-  const result: StudioResult = {
-    kind: "image",
-    url: media.url,
-    uuid: media.uuid,
-    cost: typeof row.cost === "number" ? row.cost : undefined,
-    filename: `${tab}-${Date.now()}.${tab === "qwen-layered" ? "tiff" : state.imageFormat.toLowerCase()}`,
-  };
-  const persisted = await persistNativeResult(result);
-  return {
-    ...result,
-    url: persisted.url,
-    localPath: persisted.localPath,
-    remoteUrl: /^https?:\/\//i.test(result.url) ? result.url : undefined,
-    uuid: persisted.localPath ? undefined : result.uuid,
-  };
+  return withKeepAlive("Generating a picture… You can switch apps.", async () =>
+    toStudioResult("image", tab, state, await runTask(task, onProgress))
+  );
 }
 
 export async function generateVideo(
@@ -499,7 +818,37 @@ export async function generateVideo(
   const taskUUID = uuid();
   const duration = model.durations.includes(state.duration) ? state.duration : model.durations[0];
   const resolution = model.resolutions.includes(state.resolution) ? state.resolution : model.resolutions[0];
-  const images = state.images.map((img) => img.dataUri).filter(Boolean);
+  const images = state.images.map((img) => img.dataUri).filter(isUsableReferenceImage);
+
+  if (loadVideoProvider() === "venice") {
+    if (!veniceSupports(tab)) throw new Error(`${model.label} is not set up for Venice. Switch the toggle to Runware.`);
+    return withKeepAlive("Generating a video on Venice… You can switch apps.", async () => {
+      const stillSrc = (img: { dataUri?: string; preview?: string }) => img.dataUri || img.preview || "";
+      const rawFrames = (state.wanFrames || []).map(stillSrc).filter(isUsableReferenceImage).slice(0, 2);
+      if ((state.wanFrames || []).length && !rawFrames.length) {
+        throw new Error("Those frame photos could not be read as JPEG or PNG. Attach them again.");
+      }
+      const frames = await Promise.all(rawFrames.map((image) => fitWanImage(image, state.aspect)));
+      const refs = frames.length ? [] : await Promise.all(images.slice(0, 10).map((image) => fitWanImage(image, state.aspect)));
+      const videos = frames.length ? [] : (state.wanVideos || []).filter(Boolean).slice(0, 5);
+      const audios = frames.length
+        ? []
+        : await Promise.all((state.wanAudios || []).filter(Boolean).slice(0, 5).map((item) => ensureWanAudioDataUri(item)));
+      const base = VIDEO_WAN_MODELS.includes(tab) ? wanPositivePrompt(state.prompt, state.audio) : state.prompt.trim();
+      const prompt = scrubWanPrompt(base, {
+        frames: Boolean(frames.length),
+        refs: Boolean(refs.length),
+        video: Boolean(videos.length),
+        audio: Boolean(audios.length),
+        aspect: state.aspect,
+      });
+      return generateVeniceVideo({ tab, state, prompt, duration, resolution, frames, refs, videos, audios, onProgress });
+    });
+  }
+  if (!VIDEO_WAN_MODELS.includes(tab) && model.family === "minimax") {
+    throw new Error("MiniMax runs on Venice. Switch the toggle at the top to Venice.");
+  }
+
   const task: Record<string, unknown> = {
     taskType: "videoInference",
     taskUUID,
@@ -514,14 +863,64 @@ export async function generateVideo(
     deliveryMethod: "async",
   };
 
+  const uploadedInputIds: string[] = [];
+  // Wan stills are sent inline first (nothing stored on Runware). If Wan rejects
+  // them, they are uploaded, retried once, and deleted after the job.
+  let wanStills: { frames: string[]; refs: string[] } | null = null;
+  let applyWanStills: ((stills: { frames: string[]; refs: string[] }) => void) | null = null;
   if (VIDEO_WAN_MODELS.includes(tab)) {
-    if (images.length) {
-      task.inputs = { referenceImages: images };
+    const stillSrc = (img: { dataUri?: string; preview?: string }) => img.dataUri || img.preview || "";
+    const frames = (state.wanFrames || [])
+      .map((img) => stillSrc(img))
+      .filter(isUsableReferenceImage);
+    const refs = images.length ? images : state.images.map((img) => stillSrc(img)).filter(isUsableReferenceImage);
+    if ((state.wanFrames || []).length && !frames.length) {
+      throw new Error("Those frame photos could not be read as JPEG or PNG. Attach them again.");
+    }
+    if (frames.length) {
+      // Frames never mix with reference photos, clips, or audio — Wan rejects that combo.
+      const fittedFrames = await Promise.all(frames.slice(0, 2).map((image) => fitWanImage(image, state.aspect)));
+      applyWanStills = ({ frames: stills }) => {
+        task.inputs = {
+          frameImages: stills.map((image, index) => ({
+            image,
+            frame: stills.length === 1 || index === 0 ? "first" : "last",
+          })),
+        };
+      };
+      wanStills = { frames: fittedFrames, refs: [] };
+      applyWanStills(wanStills);
       task.resolution = resolution;
+      task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), { frames: true, aspect: state.aspect });
     } else {
-      const size = wanSize(state.aspect, resolution);
-      task.width = size.width;
-      task.height = size.height;
+      const videos = await Promise.all((state.wanVideos || []).filter(Boolean).slice(0, 5).map((item) => uploadRunwareMedia(item)));
+      uploadedInputIds.push(...collectUploadedRunwareIds(videos));
+      const audios = await Promise.all(
+        (state.wanAudios || []).filter(Boolean).slice(0, 5).map(async (item) => uploadRunwareMedia(await ensureWanAudioDataUri(item)))
+      );
+      uploadedInputIds.push(...collectUploadedRunwareIds(audios));
+      const fittedRefs = refs.length ? await Promise.all(refs.slice(0, 10).map((image) => fitWanImage(image, state.aspect))) : [];
+      applyWanStills = ({ refs: stills }) => {
+        const inputs: Record<string, unknown> = {};
+        if (stills.length) inputs.referenceImages = stills;
+        if (videos.length) inputs.referenceVideos = videos;
+        if (audios.length) inputs.referenceAudios = audios;
+        if (Object.keys(inputs).length) task.inputs = inputs;
+      };
+      wanStills = { frames: [], refs: fittedRefs };
+      applyWanStills(wanStills);
+      task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), {
+        refs: Boolean(fittedRefs.length),
+        video: Boolean(videos.length),
+        audio: Boolean(audios.length),
+        aspect: state.aspect,
+      });
+      if (fittedRefs.length || videos.length) task.resolution = resolution;
+      else {
+        const size = wanSize(state.aspect, resolution);
+        task.width = size.width;
+        task.height = size.height;
+      }
     }
     task.safety = { checkContent: state.safety, mode: "fast" };
     task.settings = {
@@ -539,16 +938,61 @@ export async function generateVideo(
     }
   }
 
-  const { row, wipeIds } = await runTask(task, onProgress);
-  const media = resultUrl(row);
-  scheduleWipe([...wipeIds, media.uuid]);
+  return withKeepAlive("Generating a video… You can switch apps.", async () => {
+    try {
+      let finished: FinishedTask;
+      try {
+        finished = await runTask(task, onProgress);
+      } catch (error) {
+        const stills = wanStills;
+        const hasInline = Boolean(stills && [...stills.frames, ...stills.refs].some((v) => v.startsWith("data:")));
+        if (!stills || !applyWanStills || !hasInline || !isWanInputRejection(error)) throw error;
+        console.warn("Wan rejected inline photos; retrying with uploads that get deleted after.", error);
+        const hostedFrames = await Promise.all(stills.frames.map((image) => uploadRunwareImage(image)));
+        const hostedRefs = await Promise.all(stills.refs.map((image) => uploadRunwareImage(image)));
+        uploadedInputIds.push(...collectUploadedRunwareIds([...hostedFrames, ...hostedRefs]));
+        applyWanStills({ frames: hostedFrames, refs: hostedRefs });
+        task.taskUUID = uuid();
+        finished = await runTask(task, onProgress);
+      }
+      return await toStudioResult("video", tab, state, finished);
+    } finally {
+      if (uploadedInputIds.length) await wipeUploadedInputs(uploadedInputIds);
+    }
+  });
+}
+
+async function toStudioResult(
+  kind: "image" | "video",
+  tab: string,
+  state: TabState,
+  finished: FinishedTask
+): Promise<StudioResult> {
+  const media = resultUrl(finished.row);
+  const outputIds = new Set([media.uuid, uuidFromMediaUrl(media.url)].filter(Boolean));
+  scheduleWipe(finished.wipeIds.filter((id) => id && !outputIds.has(id)));
+  const ext =
+    kind === "video"
+      ? state.videoFormat.toLowerCase()
+      : tab === "qwen-layered"
+        ? "tiff"
+        : state.imageFormat.toLowerCase();
   const result: StudioResult = {
-    kind: "video",
+    kind,
     url: media.url,
     uuid: media.uuid,
-    cost: typeof row.cost === "number" ? row.cost : undefined,
-    filename: `${tab}-${Date.now()}.${state.videoFormat.toLowerCase()}`,
+    cost: typeof finished.row.cost === "number" ? finished.row.cost : undefined,
+    filename: `${tab}-${Date.now()}.${ext}`,
   };
+  if (finished.localPath) {
+    return {
+      ...result,
+      url: Capacitor.convertFileSrc(finished.localPath),
+      localPath: finished.localPath,
+      remoteUrl: /^https?:\/\//i.test(result.url) ? result.url : undefined,
+      uuid: undefined,
+    };
+  }
   const persisted = await persistNativeResult(result);
   return {
     ...result,
@@ -559,20 +1003,32 @@ export async function generateVideo(
   };
 }
 
+export function resultPlayUrl(result: StudioResult) {
+  const play = result.url?.trim() || "";
+  // Venice / native saves set url from Filesystem.getUri + convertFileSrc — prefer that over guessing paths.
+  if (play) return play;
+  if (result.localPath && isNativeApp()) return Capacitor.convertFileSrc(result.localPath);
+  return result.remoteUrl || "";
+}
+
 export async function downloadResult(result: StudioResult) {
   if (isNativeApp()) {
-    const source = result.localPath || result.remoteUrl || result.url;
     try {
+      const source = await gallerySourceForResult(result);
       const how = await saveToDeviceGallery(source, result.filename, result.kind === "video");
       if (result.uuid) void deleteMedia(result.uuid);
       return how;
     } catch (error) {
-      if (result.remoteUrl && result.remoteUrl !== source) {
-        const how = await saveToDeviceGallery(result.remoteUrl, result.filename, result.kind === "video");
-        if (result.uuid) void deleteMedia(result.uuid);
-        return how;
+      if (result.remoteUrl) {
+        try {
+          const how = await saveToDeviceGallery(result.remoteUrl, result.filename, result.kind === "video");
+          if (result.uuid) void deleteMedia(result.uuid);
+          return how;
+        } catch {
+          /* fall through */
+        }
       }
-      throw error;
+      throw error instanceof Error ? error : new Error("Could not save to the gallery.");
     }
   }
 

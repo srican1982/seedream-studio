@@ -1,7 +1,7 @@
 {
-  "name": "Seedream Studio",
-  "short_name": "Seedream",
-  "description": "Runware Seedream + Seedance studio for phone",
+  "name": "AI Story",
+  "short_name": "AI Story",
+  "description": "AI Story chat for stills and video",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0b0c10",
@@ -9,10 +9,16 @@
   "orientation": "portrait",
   "icons": [
     {
+      "src": "/icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
       "src": "/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ]
 }
