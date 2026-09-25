@@ -341,7 +341,8 @@ async function uploadRunwareImage(image: string): Promise<string> {
   throw new Error("Could not upload the photo to Wan.");
 }
 
-async function prepareWanImage(image: string, aspect: TabState["aspect"]): Promise<string> {
+/** Resize/crop a still to a Wan-friendly JPEG data URI (no upload). */
+async function fitWanImage(image: string, aspect: TabState["aspect"]): Promise<string> {
   const fitted = await fitImageDataUriToAspect(image, aspect);
   if (/^data:image\/(heic|heif)/i.test(fitted)) {
     throw new Error("Wan needs a JPEG or PNG. That photo is HEIC.");
@@ -349,7 +350,13 @@ async function prepareWanImage(image: string, aspect: TabState["aspect"]): Promi
   if (!isUsableReferenceImage(fitted) && !hostedWanImage(fitted)) {
     throw new Error("Wan could not read that photo. Attach a JPEG or PNG.");
   }
-  return uploadRunwareImage(fitted);
+  return fitted;
+}
+
+/** Wan rejected inline stills → worth retrying with hosted uploads. */
+function isWanInputRejection(error: unknown) {
+  const msg = error instanceof Error ? error.message : String(error || "");
+  return /invalid ?parameter|invalid.*(image|input|frame|reference)|(image|input|frame|reference).*invalid/i.test(msg);
 }
 
 function uuidFromMediaUrl(url: string) {
@@ -826,6 +833,10 @@ export async function generateVideo(
   };
 
   const uploadedInputIds: string[] = [];
+  // Wan stills are sent inline first (nothing stored on Runware). If Wan rejects
+  // them, they are uploaded, retried once, and deleted after the job.
+  let wanStills: { frames: string[]; refs: string[] } | null = null;
+  let applyWanStills: ((stills: { frames: string[]; refs: string[] }) => void) | null = null;
   if (VIDEO_WAN_MODELS.includes(tab)) {
     const stillSrc = (img: { dataUri?: string; preview?: string }) => img.dataUri || img.preview || "";
     const frames = (state.wanFrames || [])
@@ -836,14 +847,18 @@ export async function generateVideo(
       throw new Error("Those frame photos could not be read as JPEG or PNG. Attach them again.");
     }
     if (frames.length) {
-      const hosted = await Promise.all(frames.slice(0, 2).map((image) => prepareWanImage(image, state.aspect)));
-      uploadedInputIds.push(...collectUploadedRunwareIds(hosted));
-      task.inputs = {
-        frameImages: hosted.map((image, index) => ({
-          image,
-          frame: hosted.length === 1 || index === 0 ? "first" : "last",
-        })),
+      // Frames never mix with reference photos, clips, or audio — Wan rejects that combo.
+      const fittedFrames = await Promise.all(frames.slice(0, 2).map((image) => fitWanImage(image, state.aspect)));
+      applyWanStills = ({ frames: stills }) => {
+        task.inputs = {
+          frameImages: stills.map((image, index) => ({
+            image,
+            frame: stills.length === 1 || index === 0 ? "first" : "last",
+          })),
+        };
       };
+      wanStills = { frames: fittedFrames, refs: [] };
+      applyWanStills(wanStills);
       task.resolution = resolution;
       task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), { frames: true, aspect: state.aspect });
     } else {
@@ -853,20 +868,23 @@ export async function generateVideo(
         (state.wanAudios || []).filter(Boolean).slice(0, 5).map(async (item) => uploadRunwareMedia(await ensureWanAudioDataUri(item)))
       );
       uploadedInputIds.push(...collectUploadedRunwareIds(audios));
-      const hostedRefs = refs.length ? await Promise.all(refs.slice(0, 10).map((image) => prepareWanImage(image, state.aspect))) : [];
-      uploadedInputIds.push(...collectUploadedRunwareIds(hostedRefs));
-      const inputs: Record<string, unknown> = {};
-      if (hostedRefs.length) inputs.referenceImages = hostedRefs;
-      if (videos.length) inputs.referenceVideos = videos;
-      if (audios.length) inputs.referenceAudios = audios;
-      if (Object.keys(inputs).length) task.inputs = inputs;
+      const fittedRefs = refs.length ? await Promise.all(refs.slice(0, 10).map((image) => fitWanImage(image, state.aspect))) : [];
+      applyWanStills = ({ refs: stills }) => {
+        const inputs: Record<string, unknown> = {};
+        if (stills.length) inputs.referenceImages = stills;
+        if (videos.length) inputs.referenceVideos = videos;
+        if (audios.length) inputs.referenceAudios = audios;
+        if (Object.keys(inputs).length) task.inputs = inputs;
+      };
+      wanStills = { frames: [], refs: fittedRefs };
+      applyWanStills(wanStills);
       task.positivePrompt = scrubWanPrompt(String(task.positivePrompt || ""), {
-        refs: Boolean(hostedRefs.length),
+        refs: Boolean(fittedRefs.length),
         video: Boolean(videos.length),
         audio: Boolean(audios.length),
         aspect: state.aspect,
       });
-      if (hostedRefs.length || videos.length) task.resolution = resolution;
+      if (fittedRefs.length || videos.length) task.resolution = resolution;
       else {
         const size = wanSize(state.aspect, resolution);
         task.width = size.width;
@@ -891,7 +909,22 @@ export async function generateVideo(
 
   return withKeepAlive("Generating a video… You can switch apps.", async () => {
     try {
-      return await toStudioResult("video", tab, state, await runTask(task, onProgress));
+      let finished: FinishedTask;
+      try {
+        finished = await runTask(task, onProgress);
+      } catch (error) {
+        const stills = wanStills;
+        const hasInline = Boolean(stills && [...stills.frames, ...stills.refs].some((v) => v.startsWith("data:")));
+        if (!stills || !applyWanStills || !hasInline || !isWanInputRejection(error)) throw error;
+        console.warn("Wan rejected inline photos; retrying with uploads that get deleted after.", error);
+        const hostedFrames = await Promise.all(stills.frames.map((image) => uploadRunwareImage(image)));
+        const hostedRefs = await Promise.all(stills.refs.map((image) => uploadRunwareImage(image)));
+        uploadedInputIds.push(...collectUploadedRunwareIds([...hostedFrames, ...hostedRefs]));
+        applyWanStills({ frames: hostedFrames, refs: hostedRefs });
+        task.taskUUID = uuid();
+        finished = await runTask(task, onProgress);
+      }
+      return await toStudioResult("video", tab, state, finished);
     } finally {
       if (uploadedInputIds.length) await wipeUploadedInputs(uploadedInputIds);
     }
