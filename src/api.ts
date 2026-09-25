@@ -1005,9 +1005,10 @@ async function toStudioResult(
 
 export function resultPlayUrl(result: StudioResult) {
   const play = result.url?.trim() || "";
-  if (play && !/^https?:\/\//i.test(play)) return play;
+  // Venice / native saves set url from Filesystem.getUri + convertFileSrc — prefer that over guessing paths.
+  if (play) return play;
   if (result.localPath && isNativeApp()) return Capacitor.convertFileSrc(result.localPath);
-  return play || result.remoteUrl || "";
+  return result.remoteUrl || "";
 }
 
 export async function downloadResult(result: StudioResult) {

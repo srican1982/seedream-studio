@@ -1,5 +1,5 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
-import { Directory, Filesystem } from "@capacitor/filesystem";
+import { Directory, Encoding, Filesystem } from "@capacitor/filesystem";
 import { nativeSleep } from "./keep-alive";
 import { gallerySourceForResult, isNativeApp, saveToDeviceGallery } from "./native";
 import type { StudioResult, TabState, VideoTabId } from "./types";
@@ -240,46 +240,70 @@ async function base64ToBlob(b64: string, mime = "video/mp4") {
   return new Blob([bytes], { type: mime });
 }
 
+async function nativeVideoPlayUrl(relPath: string) {
+  const { uri } = await Filesystem.getUri({ directory: Directory.Data, path: relPath });
+  return { url: Capacitor.convertFileSrc(uri), localPath: relPath };
+}
+
+/** Confirm the mp4 on disk is real binary (not base64 text written as UTF-8). */
+async function assertNativeVideoFile(relPath: string, where: string) {
+  const read = await Filesystem.readFile({ directory: Directory.Data, path: relPath });
+  const data = typeof read.data === "string" ? read.data : "";
+  const head = peekBase64(data);
+  if (!looksLikeVideo(head)) {
+    await Filesystem.deleteFile({ directory: Directory.Data, path: relPath }).catch(() => {});
+    throw notAVideoError(head, where);
+  }
+}
+
 async function saveBase64Video(
   base64: string,
   filename: string,
   where = "result"
 ): Promise<{ url: string; localPath?: string }> {
-  const head = peekBase64(base64);
+  const clean = base64.replace(/^data:[^,]*,/, "").replace(/\s/g, "");
+  const head = peekBase64(clean);
   if (!looksLikeVideo(head)) throw notAVideoError(head, where);
-  console.info(`Venice video ok (${where}), ~${Math.round((base64.length * 0.75) / 1024)} KB`);
+  console.info(`Venice video ok (${where}), ~${Math.round((clean.length * 0.75) / 1024)} KB`);
   const name = safeName(filename);
   if (isNativeApp()) {
     const relPath = `ai-story/${name}`;
     await Filesystem.writeFile({
       path: relPath,
-      data: base64.replace(/^data:[^,]*,/, "").replace(/\s/g, ""),
+      data: clean,
       directory: Directory.Data,
       recursive: true,
+      encoding: Encoding.Base64,
     });
-    const { uri } = await Filesystem.getUri({ directory: Directory.Data, path: relPath });
-    return { url: Capacitor.convertFileSrc(uri), localPath: relPath };
+    await assertNativeVideoFile(relPath, where);
+    return nativeVideoPlayUrl(relPath);
   }
-  const blob = await base64ToBlob(base64);
+  const blob = await base64ToBlob(clean);
   return { url: URL.createObjectURL(blob) };
 }
 
 async function saveFromDownloadUrl(downloadUrl: string, filename: string): Promise<{ url: string; localPath?: string }> {
+  const name = safeName(filename);
+  const relPath = `ai-story/${name}`;
   if (isNativeApp()) {
     let last = "";
     for (let attempt = 0; attempt < 3; attempt++) {
-      const res = await CapacitorHttp.get({
-        url: downloadUrl,
-        responseType: "blob",
-        connectTimeout: 600000,
-        readTimeout: 600000,
-      });
-      if (res.status < 400 && typeof res.data === "string") {
-        return saveBase64Video(res.data, filename, "download link");
+      try {
+        const downloaded = await Filesystem.downloadFile({
+          url: downloadUrl,
+          path: relPath,
+          directory: Directory.Data,
+          recursive: true,
+        });
+        if (!downloaded.path) throw new Error("empty path");
+        await assertNativeVideoFile(relPath, "download link");
+        return nativeVideoPlayUrl(relPath);
+      } catch (error) {
+        last = error instanceof Error ? error.message : String(error);
+        await Filesystem.deleteFile({ directory: Directory.Data, path: relPath }).catch(() => {});
+        if (/HTTP 404|HTTP 410|404|410/i.test(last)) break;
+        await nativeSleep(3000);
       }
-      last = `HTTP ${res.status}`;
-      if (res.status === 404 || res.status === 410) break;
-      await nativeSleep(3000);
     }
     throw new Error(`Could not download the Venice video (${last}).`);
   }
@@ -348,8 +372,13 @@ function downloadUrlForJob(job: VeniceJob, json?: Record<string, unknown>) {
   return job.downloadUrl || parseDownloadUrl(json);
 }
 
+/** Wan / MiniMax on Venice: poll JSON status, then fetch the queue download link (same as Runware-style download). */
+function veniceUsesStatusPoll(model: string) {
+  return /wan-|minimax-/i.test(model);
+}
+
 function usesVeniceDownloadLink(job: VeniceJob) {
-  return Boolean(job.downloadUrl);
+  return Boolean(job.downloadUrl) || veniceUsesStatusPoll(job.model);
 }
 
 function isTerminalVeniceError(msg: string) {
@@ -407,13 +436,13 @@ async function fetchJobOnce(job: VeniceJob): Promise<FetchOutcome> {
     if (status === "FAILED" || status === "ERROR") throw new Error(veniceError(res, "Venice video failed"));
     if (status === "COMPLETED") {
       const downloadUrl = downloadUrlForJob(job, res.json);
-      if (!downloadUrl) {
-        console.warn("Venice COMPLETED without download_url", res.json);
-        throw new Error("Venice finished but sent no download link. Try Recover Venice videos in Settings.");
+      if (downloadUrl) {
+        return { kind: "saved", saved: await saveFromDownloadUrl(downloadUrl, job.filename) };
       }
-      return { kind: "saved", saved: await saveFromDownloadUrl(downloadUrl, job.filename) };
+      console.warn("Venice COMPLETED without download_url; trying inline retrieve.", res.json);
+    } else {
+      return { kind: "waiting", json: res.json };
     }
-    return { kind: "waiting", json: res.json };
   }
 
   // Inline mp4 models: retrieve returns the file when ready.

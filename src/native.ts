@@ -1,6 +1,6 @@
 import { Capacitor } from "@capacitor/core";
 import { Camera } from "@capacitor/camera";
-import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Directory, Encoding, Filesystem } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { GalleryPick } from "./gallery-pick";
 import { GallerySave } from "./gallery-save";
@@ -206,6 +206,7 @@ export async function saveAndShare(blob: Blob, filename: string): Promise<SaveMe
       data: dataUri.split(",")[1] || "",
       directory: Directory.Cache,
       recursive: true,
+      encoding: Encoding.Base64,
     });
     try {
       return await saveToDeviceGallery(saved.uri, name, video);
