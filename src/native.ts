@@ -114,6 +114,67 @@ async function shareFile(uri: string, filename: string): Promise<SaveMethod> {
   }
 }
 
+function dataPathRelative(localPath: string) {
+  const trimmed = localPath.trim();
+  const idx = trimmed.indexOf("ai-story/");
+  if (idx >= 0) return trimmed.slice(idx);
+  return trimmed.startsWith("ai-story/") ? trimmed : `ai-story/${trimmed.replace(/^\/+/, "")}`;
+}
+
+/** Path or URI the Android gallery plugin can read (Runware https or Venice app files). */
+export async function gallerySourceForResult(result: {
+  kind: string;
+  url: string;
+  localPath?: string;
+  remoteUrl?: string;
+  filename: string;
+}): Promise<string> {
+  if (!isNativeApp()) {
+    const remote = result.remoteUrl?.trim();
+    if (remote) return remote;
+    return result.url;
+  }
+
+  const remote = result.remoteUrl?.trim();
+  if (remote && /^https?:\/\//i.test(remote)) return remote;
+
+  const path = result.localPath?.trim();
+  if (path) {
+    const rel = dataPathRelative(path);
+    try {
+      const { uri } = await Filesystem.getUri({ directory: Directory.Data, path: rel });
+      if (uri) return uri;
+    } catch {
+      /* read below */
+    }
+    if (path.startsWith("/")) return path.startsWith("file://") ? path : `file://${path}`;
+    try {
+      const read = await Filesystem.readFile({ directory: Directory.Data, path: rel });
+      const data = typeof read.data === "string" ? read.data : "";
+      if (data) {
+        const mime = guessMime(result.filename, result.kind === "video");
+        return data.startsWith("data:") ? data : `data:${mime};base64,${data}`;
+      }
+    } catch {
+      /* try play url */
+    }
+  }
+
+  const play = result.url?.trim() || "";
+  if (/^https?:\/\//i.test(play) && !/_capacitor_/i.test(play)) return play;
+  if (play.startsWith("file://") || play.startsWith("content://") || play.startsWith("data:")) return play;
+
+  if (play) {
+    const res = await fetch(play);
+    if (!res.ok) throw new Error("Could not read the video file to save.");
+    const blob = await res.blob();
+    const mime = blob.type && blob.type !== "application/octet-stream" ? blob.type : guessMime(result.filename, result.kind === "video");
+    return `data:${mime};base64,${await blobToBase64(blob)}`;
+  }
+
+  throw new Error("Could not read the file to save.");
+}
+
 export async function saveToDeviceGallery(source: string, filename: string, video: boolean): Promise<SaveMethod> {
   const name = safeName(filename);
   const mime = guessMime(name, video);

@@ -1,7 +1,7 @@
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { Directory, Filesystem } from "@capacitor/filesystem";
 import { nativeSleep } from "./keep-alive";
-import { isNativeApp, saveToDeviceGallery } from "./native";
+import { gallerySourceForResult, isNativeApp, saveToDeviceGallery } from "./native";
 import type { StudioResult, TabState, VideoTabId } from "./types";
 
 const VENICE = "https://api.venice.ai/api/v1";
@@ -250,14 +250,15 @@ async function saveBase64Video(
   console.info(`Venice video ok (${where}), ~${Math.round((base64.length * 0.75) / 1024)} KB`);
   const name = safeName(filename);
   if (isNativeApp()) {
-    const written = await Filesystem.writeFile({
-      path: `ai-story/${name}`,
+    const relPath = `ai-story/${name}`;
+    await Filesystem.writeFile({
+      path: relPath,
       data: base64.replace(/^data:[^,]*,/, "").replace(/\s/g, ""),
       directory: Directory.Data,
       recursive: true,
     });
-    const path = written.path || `ai-story/${name}`;
-    return { url: Capacitor.convertFileSrc(path), localPath: path };
+    const { uri } = await Filesystem.getUri({ directory: Directory.Data, path: relPath });
+    return { url: Capacitor.convertFileSrc(uri), localPath: relPath };
   }
   const blob = await base64ToBlob(base64);
   return { url: URL.createObjectURL(blob) };
@@ -338,10 +339,17 @@ function patchJob(job: VeniceJob, patch: Partial<VeniceJob>) {
   return next;
 }
 
+function parseDownloadUrl(json?: Record<string, unknown>) {
+  const raw = json?.download_url ?? json?.downloadUrl;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : "";
+}
+
 function downloadUrlForJob(job: VeniceJob, json?: Record<string, unknown>) {
-  if (job.downloadUrl) return job.downloadUrl;
-  const fromJson = json?.download_url;
-  return typeof fromJson === "string" && fromJson ? fromJson : "";
+  return job.downloadUrl || parseDownloadUrl(json);
+}
+
+function usesVeniceDownloadLink(job: VeniceJob) {
+  return Boolean(job.downloadUrl);
 }
 
 function isTerminalVeniceError(msg: string) {
@@ -360,12 +368,7 @@ type FetchOutcome =
   | { kind: "saved"; saved: { url: string; localPath?: string } }
   | { kind: "waiting"; json?: Record<string, unknown> };
 
-/** One retrieve call. The video stays on Venice until we confirm it saved. */
-async function fetchJobOnce(job: VeniceJob): Promise<FetchOutcome> {
-  const res = await venicePost("/video/retrieve", { model: job.model, queue_id: job.queueId }, true);
-  if (res.status === 503) return { kind: "waiting" };
-  if (res.status === 404 || res.status === 409) return { kind: "waiting" };
-  if (res.status >= 400) throw new Error(veniceError(res, "Venice video failed"));
+async function saveFromRetrieveBinary(job: VeniceJob, res: VeniceResponse): Promise<FetchOutcome> {
   if (res.base64) return { kind: "saved", saved: await saveBase64Video(res.base64, job.filename) };
   if (res.blob) {
     if (isNativeApp()) {
@@ -385,18 +388,39 @@ async function fetchJobOnce(job: VeniceJob): Promise<FetchOutcome> {
     return { kind: "saved", saved: { url: URL.createObjectURL(res.blob) } };
   }
   const status = String(res.json?.status || "").toUpperCase();
+  if (status === "FAILED" || status === "ERROR") throw new Error(veniceError(res, "Venice video failed"));
   if (status === "COMPLETED") {
     const downloadUrl = downloadUrlForJob(job, res.json);
-    if (!downloadUrl) {
-      console.warn("Venice COMPLETED without download_url", res.json);
-      throw new Error(
-        "Venice marked the job complete but did not send a video link. Open Settings → Recover Venice videos, or check venice.ai for the job."
-      );
-    }
-    return { kind: "saved", saved: await saveFromDownloadUrl(downloadUrl, job.filename) };
+    if (downloadUrl) return { kind: "saved", saved: await saveFromDownloadUrl(downloadUrl, job.filename) };
   }
-  if (status === "FAILED" || status === "ERROR") throw new Error(veniceError(res, "Venice video failed"));
   return { kind: "waiting", json: res.json };
+}
+
+/** One retrieve call. The video stays on Venice until we confirm it saved. */
+async function fetchJobOnce(job: VeniceJob): Promise<FetchOutcome> {
+  // VPS / Wan-style models: poll JSON status, then GET the queue download_url (not binary retrieve).
+  if (usesVeniceDownloadLink(job)) {
+    const res = await venicePost("/video/retrieve", { model: job.model, queue_id: job.queueId }, false);
+    if (res.status === 503 || res.status === 404 || res.status === 409) return { kind: "waiting" };
+    if (res.status >= 400) throw new Error(veniceError(res, "Venice video failed"));
+    const status = String(res.json?.status || "").toUpperCase();
+    if (status === "FAILED" || status === "ERROR") throw new Error(veniceError(res, "Venice video failed"));
+    if (status === "COMPLETED") {
+      const downloadUrl = downloadUrlForJob(job, res.json);
+      if (!downloadUrl) {
+        console.warn("Venice COMPLETED without download_url", res.json);
+        throw new Error("Venice finished but sent no download link. Try Recover Venice videos in Settings.");
+      }
+      return { kind: "saved", saved: await saveFromDownloadUrl(downloadUrl, job.filename) };
+    }
+    return { kind: "waiting", json: res.json };
+  }
+
+  // Inline mp4 models: retrieve returns the file when ready.
+  const res = await venicePost("/video/retrieve", { model: job.model, queue_id: job.queueId }, true);
+  if (res.status === 503 || res.status === 404 || res.status === 409) return { kind: "waiting" };
+  if (res.status >= 400) throw new Error(veniceError(res, "Venice video failed"));
+  return saveFromRetrieveBinary(job, res);
 }
 
 /** Only after the video is safely on the phone: revoke the link and delete it on Venice. */
@@ -418,8 +442,15 @@ export async function recoverVeniceVideos(): Promise<{ tried: number; saved: num
         errors.push(`${job.model}: still processing`);
         continue;
       }
-      if (isNativeApp() && out.saved.localPath) await saveToDeviceGallery(out.saved.localPath, job.filename, true);
-      else {
+      if (isNativeApp()) {
+        const source = await gallerySourceForResult({
+          kind: "video",
+          url: out.saved.url,
+          localPath: out.saved.localPath,
+          filename: job.filename,
+        });
+        await saveToDeviceGallery(source, job.filename, true);
+      } else {
         const a = document.createElement("a");
         a.href = out.saved.url;
         a.download = job.filename;
@@ -455,7 +486,8 @@ async function queueVeniceJob(body: Record<string, unknown>, tab: VideoTabId, re
       const model = String(json.model || body.model || "");
       const queueId = String(json.queue_id || "");
       if (!model || !queueId) throw new Error("Venice queue returned no job id.");
-      const downloadUrl = typeof json.download_url === "string" ? json.download_url : undefined;
+      const downloadUrl = parseDownloadUrl(json) || undefined;
+      if (!downloadUrl) console.warn("Venice queue returned no download_url; using inline retrieve.", json);
       return { model, queueId, downloadUrl };
     }
     if (res.status !== 400) throw new Error(veniceError(res, "Venice queue failed"));
@@ -520,8 +552,9 @@ export async function generateVeniceVideo(input: VeniceVideoInput): Promise<Stud
     let out: FetchOutcome;
     try {
       out = await fetchJobOnce(job);
-      if (out.json?.download_url && !job.downloadUrl) {
-        job = patchJob(job, { downloadUrl: String(out.json.download_url) });
+      const discovered = parseDownloadUrl(out.json);
+      if (discovered && !job.downloadUrl) {
+        job = patchJob(job, { downloadUrl: discovered });
       }
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -554,7 +587,7 @@ export async function generateVeniceVideo(input: VeniceVideoInput): Promise<Stud
   await finishJob(job);
   input.onProgress?.(100);
   return {
-    kind: "video",
+    kind: "video" as const,
     url: saved.url,
     localPath: saved.localPath,
     filename: job.filename,

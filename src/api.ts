@@ -19,7 +19,7 @@ import {
   rememberRunwareUploads,
 } from "./runware-tracker";
 import { nativePollRunware, nativeSleep, withKeepAlive } from "./keep-alive";
-import { isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
+import { gallerySourceForResult, isNativeApp, persistNativeResult, saveAndShare, saveToDeviceGallery } from "./native";
 import type { ImageTabId, LocalImage, StudioResult, TabState, VideoTabId } from "./types";
 import { generateVeniceVideo, hasLocalVeniceKey, loadVideoProvider, veniceSupports } from "./venice";
 
@@ -1012,18 +1012,22 @@ export function resultPlayUrl(result: StudioResult) {
 
 export async function downloadResult(result: StudioResult) {
   if (isNativeApp()) {
-    const source = result.localPath || result.remoteUrl || result.url;
     try {
+      const source = await gallerySourceForResult(result);
       const how = await saveToDeviceGallery(source, result.filename, result.kind === "video");
       if (result.uuid) void deleteMedia(result.uuid);
       return how;
     } catch (error) {
-      if (result.remoteUrl && result.remoteUrl !== source) {
-        const how = await saveToDeviceGallery(result.remoteUrl, result.filename, result.kind === "video");
-        if (result.uuid) void deleteMedia(result.uuid);
-        return how;
+      if (result.remoteUrl) {
+        try {
+          const how = await saveToDeviceGallery(result.remoteUrl, result.filename, result.kind === "video");
+          if (result.uuid) void deleteMedia(result.uuid);
+          return how;
+        } catch {
+          /* fall through */
+        }
       }
-      throw error;
+      throw error instanceof Error ? error : new Error("Could not save to the gallery.");
     }
   }
 
