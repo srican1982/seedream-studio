@@ -101,8 +101,12 @@ async function venicePost(path: string, body: unknown, binary = false): Promise<
     });
     const headers = res.headers || {};
     const contentType = String(headers["Content-Type"] || headers["content-type"] || "");
-    if (/video\//i.test(contentType)) {
-      return { status: res.status, contentType, base64: typeof res.data === "string" ? res.data : "" };
+    if (
+      binary &&
+      typeof res.data === "string" &&
+      (/video\/|octet-stream/i.test(contentType) || looksLikeVideo(peekBase64(res.data)))
+    ) {
+      return { status: res.status, contentType, base64: res.data };
     }
     let json: Record<string, unknown> | undefined;
     if (res.data && typeof res.data === "object") json = res.data as Record<string, unknown>;
@@ -126,7 +130,7 @@ async function venicePost(path: string, body: unknown, binary = false): Promise<
     body: JSON.stringify(body),
   });
   const contentType = res.headers.get("content-type") || "";
-  if (/video\//i.test(contentType)) return { status: res.status, contentType, blob: await res.blob() };
+  if (/video\/|octet-stream/i.test(contentType)) return { status: res.status, contentType, blob: await res.blob() };
   let json: Record<string, unknown> | undefined;
   try {
     json = (await res.json()) as Record<string, unknown>;
@@ -162,6 +166,33 @@ function rejectedFields(res: VeniceResponse): string[] {
     }
   }
   return [...new Set(fromDetails)];
+}
+
+/* ---------- checking + saving the finished video ---------- */
+
+/** First bytes of a base64 string, decoded. */
+function peekBase64(b64: string, bytes = 256) {
+  try {
+    const clean = b64.replace(/^data:[^,]*,/, "").replace(/\s/g, "");
+    return atob(clean.slice(0, Math.ceil(bytes / 3) * 4));
+  } catch {
+    return "";
+  }
+}
+
+/** MP4/MOV files have "ftyp" at byte 4. */
+function looksLikeVideo(head: string) {
+  return head.slice(4, 8) === "ftyp";
+}
+
+function notAVideoError(head: string, where: string) {
+  const text = head.replace(/[^\x20-\x7e]+/g, " ").trim().slice(0, 200);
+  return new Error(`Venice ${where} did not return a video${text ? `: ${text}` : ""}`);
+}
+
+async function assertVideoBlob(blob: Blob, where: string) {
+  const head = await blob.slice(0, 256).text();
+  if (!looksLikeVideo(head)) throw notAVideoError(head, where);
 }
 
 function veniceAspect(aspect: TabState["aspect"]) {
@@ -202,9 +233,11 @@ async function base64ToBlob(b64: string, mime = "video/mp4") {
 }
 
 async function studioFromVideoBlob(blob: Blob, tab: VideoTabId, state: TabState): Promise<StudioResult> {
+  await assertVideoBlob(blob, "result");
   const ext = state.videoFormat.toLowerCase();
   const filename = `${tab}-${Date.now()}.${ext}`;
   const mime = blob.type && blob.type !== "application/octet-stream" ? blob.type : "video/mp4";
+  console.info(`Venice video ok (result), ~${Math.round(blob.size / 1024)} KB`);
 
   if (isNativeApp()) {
     const data = await new Promise<string>((resolve, reject) => {
@@ -237,14 +270,31 @@ async function studioFromVideoBlob(blob: Blob, tab: VideoTabId, state: TabState)
 
 async function downloadVeniceUrl(url: string) {
   if (Capacitor.isNativePlatform()) {
-    const res = await CapacitorHttp.get({ url, responseType: "blob", readTimeout: 600000 });
-    const b64 = typeof res.data === "string" ? res.data : "";
-    if (!b64) throw new Error("Could not download Venice video.");
-    return base64ToBlob(b64);
+    let last = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await CapacitorHttp.get({
+        url,
+        responseType: "blob",
+        connectTimeout: 600000,
+        readTimeout: 600000,
+      });
+      if (res.status < 400 && typeof res.data === "string") {
+        const head = peekBase64(res.data);
+        if (!looksLikeVideo(head)) throw notAVideoError(head, "download link");
+        console.info(`Venice video ok (download link), ~${Math.round((res.data.length * 0.75) / 1024)} KB`);
+        return base64ToBlob(res.data);
+      }
+      last = `HTTP ${res.status}`;
+      if (res.status === 404 || res.status === 410) break;
+      await nativeSleep(3000);
+    }
+    throw new Error(`Could not download the Venice video (${last}).`);
   }
   const res = await fetch(url);
-  if (!res.ok) throw new Error("Could not download Venice video.");
-  return res.blob();
+  if (!res.ok) throw new Error(`Could not download the Venice video (HTTP ${res.status}).`);
+  const blob = await res.blob();
+  await assertVideoBlob(blob, "download link");
+  return blob;
 }
 
 async function pollVeniceVideo(
@@ -262,8 +312,15 @@ async function pollVeniceVideo(
     );
     if (res.status >= 400 && res.status !== 200) throw new Error(veniceError(res, "Venice retrieve failed"));
 
-    if (res.blob) return res.blob;
-    if (res.base64) return base64ToBlob(res.base64, res.contentType || "video/mp4");
+    if (res.blob) {
+      await assertVideoBlob(res.blob, "result");
+      return res.blob;
+    }
+    if (res.base64) {
+      const head = peekBase64(res.base64);
+      if (!looksLikeVideo(head)) throw notAVideoError(head, "result");
+      return base64ToBlob(res.base64, res.contentType || "video/mp4");
+    }
 
     const status = String(res.json?.status || "");
     if (status === "COMPLETED") {
@@ -350,6 +407,7 @@ export async function generateVeniceVideo(input: VeniceVideoInput): Promise<Stud
   }
 
   const queued = await queueVeniceJob(body, input.tab, input.resolution);
+  console.info("Venice queued", { model: queued.model, queueId: queued.queueId, privateLink: Boolean(queued.downloadUrl) });
   input.onProgress?.(5);
   const blob = await pollVeniceVideo(queued.model, queued.queueId, queued.downloadUrl, input.onProgress);
   input.onProgress?.(100);
