@@ -1,4 +1,4 @@
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { Camera } from "@capacitor/camera";
 import { Directory, Encoding, Filesystem } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
@@ -233,6 +233,88 @@ export async function localFileToDataUri(path: string, mime = "image/jpeg"): Pro
   }
 }
 
+function videoRelPath(filename: string) {
+  return `ai-story/${safeName(filename)}`;
+}
+
+async function playUrlForRelPath(relPath: string) {
+  const { uri } = await Filesystem.getUri({ directory: Directory.Data, path: relPath });
+  return { url: Capacitor.convertFileSrc(uri), localPath: relPath };
+}
+
+function peekMp4Base64(b64: string) {
+  try {
+    const clean = b64.replace(/^data:[^,]*,/, "").replace(/\s/g, "");
+    const raw = atob(clean.slice(0, Math.ceil(256 / 3) * 4));
+    return raw.includes("ftyp") || raw.slice(4, 8) === "ftyp";
+  } catch {
+    return false;
+  }
+}
+
+/** Save an mp4 into app data the same way Runware does — download HTTPS or write base64 bytes. */
+export async function persistNativeVideo(input: {
+  httpUrl?: string;
+  base64?: string;
+  filename: string;
+}): Promise<{ url: string; localPath: string; remoteUrl?: string }> {
+  const relPath = videoRelPath(input.filename);
+  await Filesystem.deleteFile({ directory: Directory.Data, path: relPath }).catch(() => {});
+
+  if (input.httpUrl) {
+    try {
+      const downloaded = await Filesystem.downloadFile({
+        url: input.httpUrl,
+        path: relPath,
+        directory: Directory.Data,
+        recursive: true,
+      });
+      if (!downloaded.path) throw new Error("download returned no path");
+    } catch {
+      const res = await CapacitorHttp.get({
+        url: input.httpUrl,
+        responseType: "blob",
+        connectTimeout: 600000,
+        readTimeout: 600000,
+      });
+      if (res.status >= 400 || typeof res.data !== "string" || res.data.length < 1000) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const clean = res.data.replace(/^data:[^,]*,/, "").replace(/\s/g, "");
+      if (!peekMp4Base64(clean)) throw new Error("response was not an mp4");
+      await Filesystem.writeFile({
+        path: relPath,
+        data: clean,
+        directory: Directory.Data,
+        recursive: true,
+        encoding: Encoding.Base64,
+      });
+    }
+  } else if (input.base64) {
+    const clean = input.base64.replace(/^data:[^,]*,/, "").replace(/\s/g, "");
+    if (!peekMp4Base64(clean)) throw new Error("response was not an mp4");
+    await Filesystem.writeFile({
+      path: relPath,
+      data: clean,
+      directory: Directory.Data,
+      recursive: true,
+      encoding: Encoding.Base64,
+    });
+  } else {
+    throw new Error("No video source to save.");
+  }
+
+  const stat = await Filesystem.stat({ directory: Directory.Data, path: relPath });
+  const size = Number(stat.size ?? 0);
+  if (!Number.isFinite(size) || size < 500) {
+    await Filesystem.deleteFile({ directory: Directory.Data, path: relPath }).catch(() => {});
+    throw new Error(`Video file is too small (${size} bytes).`);
+  }
+
+  const play = await playUrlForRelPath(relPath);
+  return { ...play, remoteUrl: input.httpUrl };
+}
+
 export async function persistNativeResult(result: {
   url: string;
   filename: string;
@@ -243,18 +325,8 @@ export async function persistNativeResult(result: {
   }
 
   try {
-    const downloaded = await Filesystem.downloadFile({
-      url: result.url,
-      path: `ai-story/${safeName(result.filename)}`,
-      directory: Directory.Data,
-      recursive: true,
-    });
-    if (!downloaded.path) return { url: result.url, uuid: result.uuid };
-    return {
-      url: Capacitor.convertFileSrc(downloaded.path),
-      localPath: downloaded.path,
-      uuid: result.uuid,
-    };
+    const saved = await persistNativeVideo({ httpUrl: result.url, filename: result.filename });
+    return { url: saved.url, localPath: saved.localPath, uuid: undefined };
   } catch {
     return { url: result.url, uuid: result.uuid };
   }
