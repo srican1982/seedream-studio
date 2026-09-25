@@ -334,25 +334,8 @@ async function uploadRunwareImage(image: string): Promise<string> {
   if (!value) throw new Error("Missing image.");
   const already = hostedWanImage(value);
   if (already) return already;
-  try {
-    const payload = await postRunware([
-      {
-        taskType: "imageUpload",
-        taskUUID: uuid(),
-        image: value,
-      },
-    ]);
-    if (!payload.errors?.length) {
-      const row = payload.data?.[0] || {};
-      const uploaded = hostedWanImage(String(row.imageURL || row.imageUUID || ""));
-      if (uploaded) {
-        rememberRunwareUploads(collectUploadedRunwareIds([uploaded, String(row.imageUUID || ""), String(row.imageURL || "")]));
-        return uploaded;
-      }
-    }
-  } catch {
-    /* mediaStorage next */
-  }
+  // Use mediaStorage only. The old imageUpload task returns an imageUUID that
+  // mediaStorage "delete" cannot remove (Runware keeps it ~30 days after last use).
   const stored = hostedWanImage(await uploadRunwareMedia(value));
   if (stored) return stored;
   throw new Error("Could not upload the photo to Wan.");
@@ -389,13 +372,15 @@ function collectUploadedRunwareIds(values: string[]) {
   return [...ids];
 }
 
-function wipeUploadedInputs(ids: string[]) {
+async function wipeUploadedInputs(ids: string[]) {
   const unique = [...new Set(ids.filter(Boolean))];
+  const deleted: string[] = [];
   for (const id of unique) {
-    void deleteMedia(id);
-    scheduleWipe([id]);
+    if (await deleteMedia(id)) deleted.push(id);
+    else console.warn("Runware delete failed, keeping id for Settings cleanup:", id);
   }
-  if (unique.length) forgetTrackedRunwareUploads(unique);
+  // Only forget ids Runware confirmed deleted, so Settings → Delete can retry the rest.
+  if (deleted.length) forgetTrackedRunwareUploads(deleted);
 }
 
 function collectWipeIds(rows: Array<Record<string, unknown>>) {
@@ -508,8 +493,13 @@ export async function deleteMedia(mediaUUID: string): Promise<boolean> {
         media: mediaUUID,
       },
     ]);
-    return !payload.errors?.length;
-  } catch {
+    if (payload.errors?.length) {
+      console.warn("Runware delete error", mediaUUID, payload.errors);
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.warn("Runware delete request failed", mediaUUID, error);
     return false;
   }
 }
@@ -518,12 +508,12 @@ export async function deleteMedia(mediaUUID: string): Promise<boolean> {
 export async function purgeRunwareServerCopies(extraIdsRaw = "") {
   const ids = new Set(await collectRunwareIdsOnDevice());
   for (const id of parseRunwareIdsFromUserInput(extraIdsRaw)) ids.add(id);
-  let removed = 0;
+  const removedIds: string[] = [];
   for (const id of ids) {
-    if (await deleteMedia(id)) removed += 1;
+    if (await deleteMedia(id)) removedIds.push(id);
   }
-  forgetTrackedRunwareUploads([...ids]);
-  return { requested: ids.size, removed };
+  forgetTrackedRunwareUploads(removedIds);
+  return { requested: ids.size, removed: removedIds.length };
 }
 
 export type ChatContentPart =
@@ -903,7 +893,7 @@ export async function generateVideo(
     try {
       return await toStudioResult("video", tab, state, await runTask(task, onProgress));
     } finally {
-      if (uploadedInputIds.length) wipeUploadedInputs(uploadedInputIds);
+      if (uploadedInputIds.length) await wipeUploadedInputs(uploadedInputIds);
     }
   });
 }
